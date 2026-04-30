@@ -104,3 +104,125 @@ impl From<&Gaussian> for GaussianGpu {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    fn full_gaussian() -> Gaussian {
+        Gaussian {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            nx: 0.1,
+            ny: 0.2,
+            nz: 0.3,
+            f_dc_0: 0.4,
+            f_dc_1: 0.5,
+            f_dc_2: 0.6,
+            f_rest: [0.7; 45],
+            opacity: -1.5,
+            scale_0: 0.8,
+            scale_1: 0.9,
+            scale_2: 1.0,
+            rot_0: 1.0,
+            rot_1: 0.0,
+            rot_2: 0.0,
+            rot_3: 0.0,
+        }
+    }
+
+    // --- Gaussian accessor ---
+
+    #[test]
+    fn test_position_accessor() {
+        let g = full_gaussian();
+        let p = g.position();
+        assert_eq!(p, Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn test_color_accessor() {
+        let g = full_gaussian();
+        let c = g.color();
+        assert_eq!(c, Vec3::new(0.4, 0.5, 0.6));
+    }
+
+    #[test]
+    fn test_scale_accessor() {
+        let g = full_gaussian();
+        let s = g.scale();
+        assert_eq!(s, Vec3::new(0.8, 0.9, 1.0));
+    }
+
+    #[test]
+    fn test_rotation_accessor() {
+        let g = full_gaussian();
+        assert_eq!(g.rotation(), [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    // --- GaussianGpu::from ---
+
+    #[test]
+    fn test_gaussian_gpu_pos() {
+        let gpu = GaussianGpu::from(&full_gaussian());
+        assert_eq!(gpu.pos, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_gaussian_gpu_opacity() {
+        let gpu = GaussianGpu::from(&full_gaussian());
+        assert!((gpu.opacity - (-1.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_gaussian_gpu_color_dc() {
+        let gpu = GaussianGpu::from(&full_gaussian());
+        assert_eq!(gpu.color_dc, [0.4, 0.5, 0.6]);
+    }
+
+    #[test]
+    fn test_gaussian_gpu_scale() {
+        let gpu = GaussianGpu::from(&full_gaussian());
+        assert_eq!(gpu.scale, [0.8, 0.9, 1.0]);
+    }
+
+    #[test]
+    fn test_gaussian_gpu_rot() {
+        let gpu = GaussianGpu::from(&full_gaussian());
+        assert_eq!(gpu.rot, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_gaussian_gpu_f_rest() {
+        let gpu = GaussianGpu::from(&full_gaussian());
+        assert!(gpu.f_rest.iter().all(|&v| (v - 0.7).abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_gaussian_gpu_pad_fields_are_zero() {
+        // 패딩 필드는 항상 0이어야 WGSL 레이아웃과 일치한다
+        let gpu = GaussianGpu::from(&full_gaussian());
+        assert_eq!(gpu._pad0, 0.0);
+        assert_eq!(gpu._pad1, 0.0);
+        assert_eq!(gpu._pad2, [0.0; 3]);
+    }
+
+    #[test]
+    fn test_gaussian_gpu_size() {
+        // GaussianGpu 크기가 WGSL 레이아웃(16바이트 정렬, 총 256바이트)과 일치하는지 확인
+        // pos(12)+opacity(4) + color_dc(12)+pad0(4) + scale(12)+pad1(4) + rot(16)
+        // + f_rest(180)+pad2(12) = 256 bytes
+        assert_eq!(std::mem::size_of::<GaussianGpu>(), 256);
+    }
+
+    #[test]
+    fn test_gaussian_gpu_from_zeroed() {
+        // 모든 필드가 0인 Gaussian도 패닉 없이 변환되어야 한다
+        let g = Gaussian::zeroed();
+        let gpu = GaussianGpu::from(&g);
+        assert_eq!(gpu.pos, [0.0; 3]);
+        assert_eq!(gpu.f_rest, [0.0; 45]);
+    }
+}
