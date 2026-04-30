@@ -26,6 +26,9 @@ Follows Eric Normand's **Data / Compute / Action** model:
 ```
 src/
 ├── data/          # Immutable data structures (Gaussian, CameraState, AppState)
+│   ├── gaussian.rs        # Gaussian splat (pos, opacity, scale, rot, SH coefficients)
+│   ├── camera.rs          # CameraState (theta, phi, radius)
+│   └── app_state.rs       # AppState — top-level aggregation of gaussians + camera
 ├── compute/       # Pure functions — no side effects, fully testable
 │   ├── camera_ops.rs      # view matrix, orbit, zoom
 │   ├── gaussian_ops.rs    # depth sort, covariance, LOD filter
