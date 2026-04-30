@@ -3,9 +3,13 @@ use crate::data::gaussian::Gaussian;
 pub fn parse_gaussian_from_bytes(data: &[u8]) -> Result<Gaussian, String> {
     let required = std::mem::size_of::<Gaussian>();
     if data.len() < required {
-        return Err(format!("insufficient data: got {} bytes, need {}", data.len(), required));
+        return Err(format!(
+            "insufficient data: got {} bytes, need {}",
+            data.len(),
+            required
+        ));
     }
-    
+
     let read_f32 = |offset: usize| -> f32 {
         f32::from_le_bytes([
             data[offset],
@@ -14,12 +18,12 @@ pub fn parse_gaussian_from_bytes(data: &[u8]) -> Result<Gaussian, String> {
             data[offset + 3],
         ])
     };
-    
+
     let mut f_rest = [0.0f32; 45];
-    for j in 0..45 {
-        f_rest[j] = read_f32(36 + j * 4);
+    for (j, val) in f_rest.iter_mut().enumerate() {
+        *val = read_f32(36 + j * 4);
     }
-    
+
     Ok(Gaussian {
         x: read_f32(0),
         y: read_f32(4),

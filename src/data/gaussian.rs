@@ -1,5 +1,5 @@
-use glam::Vec3;
 use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
 
 #[repr(C)]
 #[derive(Pod, Zeroable, Clone, Copy, Debug)]
@@ -28,15 +28,15 @@ impl Gaussian {
     pub fn position(&self) -> Vec3 {
         Vec3::new(self.x, self.y, self.z)
     }
-    
+
     pub fn color(&self) -> Vec3 {
         Vec3::new(self.f_dc_0, self.f_dc_1, self.f_dc_2)
     }
-    
+
     pub fn scale(&self) -> Vec3 {
         Vec3::new(self.scale_0, self.scale_1, self.scale_2)
     }
-    
+
     pub fn rotation(&self) -> [f32; 4] {
         [self.rot_0, self.rot_1, self.rot_2, self.rot_3]
     }

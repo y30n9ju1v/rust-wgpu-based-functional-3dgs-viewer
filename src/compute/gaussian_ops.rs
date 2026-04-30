@@ -1,5 +1,5 @@
 use crate::data::gaussian::Gaussian;
-use glam::{Vec3, Quat};
+use glam::{Quat, Vec3};
 use rayon::prelude::*;
 
 pub fn quat_to_mat3(q: &[f32; 4]) -> glam::Mat3 {
@@ -17,33 +17,27 @@ pub fn compute_covariance(gaussian: &Gaussian) -> glam::Mat3 {
     rs * rs.transpose()
 }
 
-pub fn sort_gaussians_by_depth(
-    gaussians: &[Gaussian],
-    camera_pos: Vec3,
-) -> Vec<usize> {
+pub fn sort_gaussians_by_depth(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..gaussians.len()).collect();
-    
+
     indices.sort_by(|&a, &b| {
         let dist_a = (gaussians[a].position() - camera_pos).length_squared();
         let dist_b = (gaussians[b].position() - camera_pos).length_squared();
         dist_b.partial_cmp(&dist_a).unwrap()
     });
-    
+
     indices
 }
 
-pub fn sort_gaussians_by_depth_parallel(
-    gaussians: &[Gaussian],
-    camera_pos: Vec3,
-) -> Vec<usize> {
+pub fn sort_gaussians_by_depth_parallel(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..gaussians.len()).collect();
-    
+
     indices.par_sort_by(|&a, &b| {
         let dist_a = (gaussians[a].position() - camera_pos).length_squared();
         let dist_b = (gaussians[b].position() - camera_pos).length_squared();
         dist_b.partial_cmp(&dist_a).unwrap()
     });
-    
+
     indices
 }
 
@@ -62,13 +56,10 @@ pub fn filter_gaussians_by_lod(
 }
 
 fn is_visible_at_lod(index: usize, g: &Gaussian, camera_pos: Vec3, skip_rate: usize) -> bool {
-    index % skip_rate == 0 && (g.position() - camera_pos).length() < 50.0
+    index.is_multiple_of(skip_rate) && (g.position() - camera_pos).length() < 50.0
 }
 
-pub fn transform_gaussians_batch(
-    gaussians: &[Gaussian],
-    view_matrix: glam::Mat4,
-) -> Vec<Vec3> {
+pub fn transform_gaussians_batch(gaussians: &[Gaussian], view_matrix: glam::Mat4) -> Vec<Vec3> {
     gaussians
         .iter()
         .map(|g| {
@@ -78,10 +69,7 @@ pub fn transform_gaussians_batch(
         .collect()
 }
 
-pub fn compute_distances_batch(
-    gaussians: &[Gaussian],
-    camera_pos: Vec3,
-) -> Vec<f32> {
+pub fn compute_distances_batch(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<f32> {
     gaussians
         .iter()
         .map(|g| (g.position() - camera_pos).length_squared())

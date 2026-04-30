@@ -1,20 +1,20 @@
 use std::sync::Arc;
+use wgpu::*;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
-use wgpu::*;
 
-pub mod data;
-pub mod compute;
 pub mod action;
+pub mod compute;
+pub mod data;
 
+use action::gpu::GaussianGpu;
+use action::{gpu, io, render};
+use compute::camera_ops;
 use data::app_state::AppState;
 use data::gaussian::Gaussian;
-use compute::camera_ops;
-use action::{io, gpu, render};
-use action::gpu::GaussianGpu;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,10 +55,26 @@ impl AppContext {
         let shader = gpu::create_shader_module(&device, include_str!("shaders/render.wgsl"));
 
         let bind_group_layout = make_bind_group_layout(&device);
-        let bind_group = make_bind_group(&device, &bind_group_layout, &camera_buffer, &gaussian_buffer);
+        let bind_group = make_bind_group(
+            &device,
+            &bind_group_layout,
+            &camera_buffer,
+            &gaussian_buffer,
+        );
         let pipeline = make_render_pipeline(&device, &shader, &bind_group_layout, config.format);
 
-        Self { state, device, queue, surface, config, pipeline, bind_group, gaussian_buffer, camera_buffer, proj_matrix }
+        Self {
+            state,
+            device,
+            queue,
+            surface,
+            config,
+            pipeline,
+            bind_group,
+            gaussian_buffer,
+            camera_buffer,
+            proj_matrix,
+        }
     }
 
     fn update(&mut self, input: InputEvent) {
@@ -75,8 +91,12 @@ impl AppContext {
     fn render(&self) {
         self.upload_sorted_gaussians();
 
-        let Ok(output) = self.surface.get_current_texture() else { return };
-        let view = output.texture.create_view(&TextureViewDescriptor::default());
+        let Ok(output) = self.surface.get_current_texture() else {
+            return;
+        };
+        let view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
 
         render::render_frame(
             &self.device,
@@ -212,8 +232,14 @@ fn make_bind_group(
         label: Some("Main"),
         layout,
         entries: &[
-            BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() },
-            BindGroupEntry { binding: 1, resource: gaussian_buffer.as_entire_binding() },
+            BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: gaussian_buffer.as_entire_binding(),
+            },
         ],
     })
 }
@@ -339,7 +365,14 @@ fn main() {
     let mut last_mouse_pos: Option<(f32, f32)> = None;
 
     let _ = event_loop.run(move |event, elwt| {
-        handle_event(event, elwt, &window, &mut app, &mut mouse_pressed, &mut last_mouse_pos);
+        handle_event(
+            event,
+            elwt,
+            &window,
+            &mut app,
+            &mut mouse_pressed,
+            &mut last_mouse_pos,
+        );
         elwt.set_control_flow(ControlFlow::Poll);
     });
 }

@@ -14,7 +14,7 @@ impl AppState {
             gaussians,
         }
     }
-    
+
     pub fn with_camera(&self, camera: CameraState) -> Self {
         AppState {
             camera,

@@ -1,6 +1,6 @@
-use wgpu::*;
-use wgpu::util::DeviceExt;
 use crate::data::gaussian::Gaussian;
+use wgpu::util::DeviceExt;
+use wgpu::*;
 
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -34,12 +34,9 @@ impl From<&Gaussian> for GaussianGpu {
     }
 }
 
-pub fn create_gaussian_buffer(
-    device: &Device,
-    gaussians: &[Gaussian],
-) -> Buffer {
+pub fn create_gaussian_buffer(device: &Device, gaussians: &[Gaussian]) -> Buffer {
     let gpu_gaussians: Vec<GaussianGpu> = gaussians.iter().map(|g| g.into()).collect();
-    
+
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Gaussian Buffer"),
         contents: bytemuck::cast_slice(&gpu_gaussians),
@@ -63,7 +60,7 @@ pub fn create_camera_buffer(
         view: view_matrix.to_cols_array(),
         projection: proj_matrix.to_cols_array(),
     };
-    
+
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Camera Buffer"),
         contents: bytemuck::cast_slice(&[camera]),
@@ -71,20 +68,13 @@ pub fn create_camera_buffer(
     })
 }
 
-pub fn create_shader_module(
-    device: &Device,
-    source: &str,
-) -> ShaderModule {
+pub fn create_shader_module(device: &Device, source: &str) -> ShaderModule {
     device.create_shader_module(ShaderModuleDescriptor {
         label: Some("Shader"),
         source: ShaderSource::Wgsl(source.into()),
     })
 }
 
-pub fn update_buffer<T: bytemuck::Pod>(
-    queue: &Queue,
-    buffer: &Buffer,
-    data: &[T],
-) {
+pub fn update_buffer<T: bytemuck::Pod>(queue: &Queue, buffer: &Buffer, data: &[T]) {
     queue.write_buffer(buffer, 0, bytemuck::cast_slice(data));
 }
