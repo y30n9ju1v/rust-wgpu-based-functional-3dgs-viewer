@@ -69,7 +69,10 @@ impl AppContext {
         let view_matrix = camera_ops::camera_to_view_matrix(state.camera);
 
         let gaussian_buffer = gpu::create_gaussian_buffer(&device, &state.gaussians);
-        let camera_buffer = gpu::create_camera_buffer(&device, view_matrix, proj_matrix);
+        let camera_pos = camera_ops::compute_camera_position(state.camera);
+        let viewport_size = [config.width as f32, config.height as f32];
+        let camera_buffer =
+            gpu::create_camera_buffer(&device, view_matrix, proj_matrix, camera_pos, viewport_size);
         let shader = gpu::create_shader_module(&device, include_str!("shaders/render.wgsl"));
 
         let bind_group_layout = make_bind_group_layout(&device);
@@ -102,9 +105,13 @@ impl AppContext {
         self.state.camera = apply_input(self.state.camera, input);
 
         let view_matrix = camera_ops::camera_to_view_matrix(self.state.camera);
+        let camera_pos = camera_ops::compute_camera_position(self.state.camera);
+        let viewport_size = [self.config.width as f32, self.config.height as f32];
         let camera_data = gpu::CameraUniform {
             view: view_matrix.to_cols_array(),
             projection: self.proj_matrix.to_cols_array(),
+            camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
+            viewport: [viewport_size[0], viewport_size[1], 0.0, 0.0],
         };
         gpu::update_buffer(&self.queue, &self.camera_buffer, &[camera_data]);
     }

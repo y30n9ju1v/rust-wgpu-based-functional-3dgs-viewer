@@ -70,6 +70,8 @@ pub fn create_gaussian_buffer(device: &Device, gaussians: &[Gaussian]) -> Buffer
 pub struct CameraUniform {
     pub view: [f32; 16],
     pub projection: [f32; 16],
+    pub camera_pos: [f32; 4],
+    pub viewport: [f32; 4],
 }
 
 /// GPU Uniform Buffer에 카메라 행렬을 초기 업로드한다.
@@ -77,10 +79,14 @@ pub fn create_camera_buffer(
     device: &Device,
     view_matrix: glam::Mat4,
     proj_matrix: glam::Mat4,
+    camera_pos: glam::Vec3,
+    viewport_size: [f32; 2],
 ) -> Buffer {
     let camera = CameraUniform {
         view: view_matrix.to_cols_array(),
         projection: proj_matrix.to_cols_array(),
+        camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
+        viewport: [viewport_size[0], viewport_size[1], 0.0, 0.0],
     };
 
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

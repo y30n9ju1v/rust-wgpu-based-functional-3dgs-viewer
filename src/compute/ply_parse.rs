@@ -92,13 +92,25 @@ mod tests {
         rot: [f32; 4],
     ) -> Vec<u8> {
         let mut buf = Vec::with_capacity(STRIDE);
-        for v in pos { buf.extend(f32_le(v)); }
-        for v in normal { buf.extend(f32_le(v)); }
-        for v in f_dc { buf.extend(f32_le(v)); }
-        for v in f_rest { buf.extend(f32_le(v)); }
+        for v in pos {
+            buf.extend(f32_le(v));
+        }
+        for v in normal {
+            buf.extend(f32_le(v));
+        }
+        for v in f_dc {
+            buf.extend(f32_le(v));
+        }
+        for v in f_rest {
+            buf.extend(f32_le(v));
+        }
         buf.extend(f32_le(opacity));
-        for v in scale { buf.extend(f32_le(v)); }
-        for v in rot { buf.extend(f32_le(v)); }
+        for v in scale {
+            buf.extend(f32_le(v));
+        }
+        for v in rot {
+            buf.extend(f32_le(v));
+        }
         assert_eq!(buf.len(), STRIDE);
         buf
     }
@@ -198,10 +210,22 @@ mod tests {
     #[test]
     fn test_parse_two_gaussians() {
         let r1 = make_record(
-            [1.0, 0.0, 0.0], [0.0; 3], [0.0; 3], [0.0; 45], 0.0, [0.0; 3], [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0; 3],
+            [0.0; 3],
+            [0.0; 45],
+            0.0,
+            [0.0; 3],
+            [1.0, 0.0, 0.0, 0.0],
         );
         let r2 = make_record(
-            [2.0, 0.0, 0.0], [0.0; 3], [0.0; 3], [0.0; 45], 0.0, [0.0; 3], [1.0, 0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0; 3],
+            [0.0; 3],
+            [0.0; 45],
+            0.0,
+            [0.0; 3],
+            [1.0, 0.0, 0.0, 0.0],
         );
         let data = [r1, r2].concat();
         let gaussians = parse_gaussians(&data, STRIDE, 2).unwrap();
