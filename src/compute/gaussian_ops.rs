@@ -1,5 +1,5 @@
 use crate::data::gaussian::Gaussian;
-use glam::{Vec3, Quat, Vec4Swizzles};
+use glam::{Vec3, Quat};
 use rayon::prelude::*;
 
 pub fn quat_to_mat3(q: &[f32; 4]) -> glam::Mat3 {
@@ -52,21 +52,17 @@ pub fn filter_gaussians_by_lod(
     camera_pos: Vec3,
     lod_level: u32,
 ) -> Vec<usize> {
-    let skip_rate = 1 << lod_level;
-    
+    let skip_rate = (1usize) << lod_level;
     gaussians
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| {
-            if i % skip_rate as usize == 0 {
-                let dist = (g.position() - camera_pos).length();
-                if dist < 50.0 {
-                    return Some(i);
-                }
-            }
-            None
-        })
+        .filter(|(i, g)| is_visible_at_lod(*i, g, camera_pos, skip_rate))
+        .map(|(i, _)| i)
         .collect()
+}
+
+fn is_visible_at_lod(index: usize, g: &Gaussian, camera_pos: Vec3, skip_rate: usize) -> bool {
+    index % skip_rate == 0 && (g.position() - camera_pos).length() < 50.0
 }
 
 pub fn transform_gaussians_batch(
@@ -77,7 +73,7 @@ pub fn transform_gaussians_batch(
         .iter()
         .map(|g| {
             let pos = Vec3::new(g.x, g.y, g.z);
-            (view_matrix * pos.extend(1.0)).xyz()
+            (view_matrix * pos.extend(1.0)).truncate()
         })
         .collect()
 }
