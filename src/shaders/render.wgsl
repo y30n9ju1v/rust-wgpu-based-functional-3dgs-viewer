@@ -74,24 +74,28 @@ fn corner_uv(corner_idx: u32) -> vec2<f32> {
     }
 }
 
-// packed vec4 배열에서 스칼라 SH 계수 하나를 꺼낸다.
-// naga는 런타임 값으로 배열을 인덱싱할 수 없어 vec_idx를 switch로 분기한다.
-fn get_f_rest(f_rest: array<vec4<f32>, 12>, index: u32) -> f32 {
-    let comp = index % 4u;
-    switch index / 4u {
-        case  0u: { return f_rest[ 0][comp]; }
-        case  1u: { return f_rest[ 1][comp]; }
-        case  2u: { return f_rest[ 2][comp]; }
-        case  3u: { return f_rest[ 3][comp]; }
-        case  4u: { return f_rest[ 4][comp]; }
-        case  5u: { return f_rest[ 5][comp]; }
-        case  6u: { return f_rest[ 6][comp]; }
-        case  7u: { return f_rest[ 7][comp]; }
-        case  8u: { return f_rest[ 8][comp]; }
-        case  9u: { return f_rest[ 9][comp]; }
-        case 10u: { return f_rest[10][comp]; }
-        default:  { return f_rest[11][comp]; }
+// packed vec4 배열에서 vec4 하나를 꺼낸다.
+// naga는 런타임 값으로 배열을 인덱싱할 수 없어 switch로 분기한다.
+fn get_f_rest_vec(f_rest: array<vec4<f32>, 12>, vec_idx: u32) -> vec4<f32> {
+    switch vec_idx {
+        case  0u: { return f_rest[ 0]; }
+        case  1u: { return f_rest[ 1]; }
+        case  2u: { return f_rest[ 2]; }
+        case  3u: { return f_rest[ 3]; }
+        case  4u: { return f_rest[ 4]; }
+        case  5u: { return f_rest[ 5]; }
+        case  6u: { return f_rest[ 6]; }
+        case  7u: { return f_rest[ 7]; }
+        case  8u: { return f_rest[ 8]; }
+        case  9u: { return f_rest[ 9]; }
+        case 10u: { return f_rest[10]; }
+        default:  { return f_rest[11]; }
     }
+}
+
+// packed vec4 배열에서 스칼라 SH 계수 하나를 꺼낸다.
+fn get_f_rest(f_rest: array<vec4<f32>, 12>, index: u32) -> f32 {
+    return get_f_rest_vec(f_rest, index / 4u)[index % 4u];
 }
 
 // deg_offset 번째 SH 계수의 RGB 트리플렛을 반환한다.
@@ -185,25 +189,30 @@ fn build_jacobian(tx: f32, ty: f32, tz: f32, fx: f32, fy: f32) -> mat3x3<f32> {
     );
 }
 
-// 3D 공분산을 화면 공간 2D 공분산으로 투영한다.
-// 반환값: (σ_xx, σ_xy, σ_yy) — 대칭 2×2 행렬의 상삼각 성분 (픽셀² 단위).
-// low-pass filter (+0.3)는 서브픽셀 aliasing을 억제한다.
-fn project_cov3d(g: Gaussian, pos_view: vec3<f32>, fx: f32, fy: f32) -> vec3<f32> {
+// 가우시안의 3D 공분산 행렬 Σ = RS(RS)^T 를 계산한다.
+fn compute_cov3d(g: Gaussian) -> mat3x3<f32> {
     let s = exp(g.scale);
     let S = mat3x3<f32>(s.x, 0.0, 0.0, 0.0, s.y, 0.0, 0.0, 0.0, s.z);
-    let R = quat_to_mat(g.rot);
-    let M = R * S;
-    let V = M * transpose(M); // 3D 공분산 = RS(RS)^T
+    let M = quat_to_mat(g.rot) * S;
+    return M * transpose(M);
+}
 
-    // 뷰 행렬의 상위 3×3만 추출 (회전 성분, 평행이동 불필요)
-    let W_rot = mat3x3<f32>(
+// 뷰 행렬의 회전 성분(상위 3×3)을 추출한다.
+fn view_rotation() -> mat3x3<f32> {
+    return mat3x3<f32>(
         camera.view[0].xyz,
         camera.view[1].xyz,
         camera.view[2].xyz,
     );
+}
+
+// 3D 공분산을 화면 공간 2D 공분산으로 투영한다.
+// 반환값: (σ_xx, σ_xy, σ_yy) — 대칭 2×2 행렬의 상삼각 성분 (픽셀² 단위).
+// low-pass filter (+0.3)는 서브픽셀 aliasing을 억제한다.
+fn project_cov3d(g: Gaussian, pos_view: vec3<f32>, fx: f32, fy: f32) -> vec3<f32> {
     let J = build_jacobian(pos_view.x, pos_view.y, pos_view.z, fx, fy);
-    let T = J * W_rot;
-    let cov3x3 = T * V * transpose(T);
+    let T = J * view_rotation();
+    let cov3x3 = T * compute_cov3d(g) * transpose(T);
 
     var cov2d = vec3<f32>(cov3x3[0][0], cov3x3[0][1], cov3x3[1][1]);
     cov2d.x += 0.3;
@@ -220,6 +229,41 @@ fn cov2d_to_conic(cov2d: vec3<f32>) -> vec3<f32> {
 }
 
 // -----------------------------------------------------------------------------
+// 버텍스 셰이더 — 헬퍼
+// -----------------------------------------------------------------------------
+
+// 카메라 파라미터에서 픽셀 단위 초점 거리를 계산한다.
+fn focal_lengths() -> vec2<f32> {
+    let W = camera.viewport.x;
+    let H = camera.viewport.y;
+    // projection[0][0] = 2f/W 이므로 역산
+    return vec2<f32>(
+        camera.projection[0][0] * W * 0.5,
+        camera.projection[1][1] * H * 0.5,
+    );
+}
+
+// 화면 공간 오프셋을 clip space 오프셋으로 변환한다.
+fn screen_to_clip_offset(offset_screen: vec2<f32>, clip_w: f32) -> vec2<f32> {
+    let W = camera.viewport.x;
+    let H = camera.viewport.y;
+    let offset_ndc = offset_screen / vec2<f32>(W * 0.5, H * 0.5);
+    // NDC offset을 clip space로 역변환. clip_pos.z/w는 그대로 유지한다.
+    return offset_ndc * clip_w;
+}
+
+// 퇴화 vertex — 카메라 뒤쪽 가우시안을 컬링할 때 반환한다.
+fn degenerate_vertex() -> VertexOutput {
+    return VertexOutput(
+        vec4<f32>(0.0),
+        vec3<f32>(0.0),
+        0.0,
+        vec2<f32>(0.0),
+        vec3<f32>(0.0),
+    );
+}
+
+// -----------------------------------------------------------------------------
 // 버텍스 셰이더
 // -----------------------------------------------------------------------------
 
@@ -232,36 +276,25 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
     // wgpu/glam right-hand 좌표계에서 카메라 앞쪽은 -Z.
     // tz > 0 이면 카메라 뒤쪽이므로 퇴화 vertex로 컬링한다.
     if pos_view.z > 0.0 {
-        return VertexOutput(vec4<f32>(0.0), vec3<f32>(0.0), 0.0, vec2<f32>(0.0), vec3<f32>(0.0));
+        return degenerate_vertex();
     }
 
-    let dir = normalize(g.pos - camera.camera_pos.xyz);
-
-    let W = camera.viewport.x;
-    let H = camera.viewport.y;
-    // NDC → 픽셀 변환 스케일 (projection[0][0] = 2f/W 이므로 역산)
-    let fx = camera.projection[0][0] * W * 0.5;
-    let fy = camera.projection[1][1] * H * 0.5;
-
-    let cov2d = project_cov3d(g, pos_view.xyz, fx, fy);
-    let conic = cov2d_to_conic(cov2d);
+    let f = focal_lengths();
+    let cov2d = project_cov3d(g, pos_view.xyz, f.x, f.y);
 
     // 3σ 범위를 쿼드 반경으로 사용해 가우시안을 완전히 포함시킨다.
     let extent = vec2<f32>(ceil(3.0 * sqrt(cov2d.x)), ceil(3.0 * sqrt(cov2d.z)));
     let offset_screen = uv * extent;
-    let offset_ndc = offset_screen / vec2<f32>(W * 0.5, H * 0.5);
 
     let clip_pos = camera.projection * vec4<f32>(pos_view.xyz, 1.0);
-    // NDC offset을 clip space로 역변환 후 합산.
-    // clip_pos.z/w는 그대로 유지해 depth buffer 정확도를 보존한다.
-    let offset_clip = offset_ndc * clip_pos.w;
+    let offset_clip = screen_to_clip_offset(offset_screen, clip_pos.w);
 
     var out: VertexOutput;
-    out.clip_pos = vec4<f32>(clip_pos.xy + offset_clip, clip_pos.z, clip_pos.w);
-    out.color = compute_sh(g, dir);
-    out.alpha = sigmoid(g.opacity);
-    out.delta_screen = offset_screen;
-    out.conic = conic;
+    out.clip_pos      = vec4<f32>(clip_pos.xy + offset_clip, clip_pos.z, clip_pos.w);
+    out.color         = compute_sh(g, normalize(g.pos - camera.camera_pos.xyz));
+    out.alpha         = sigmoid(g.opacity);
+    out.delta_screen  = offset_screen;
+    out.conic         = cov2d_to_conic(cov2d);
     return out;
 }
 
@@ -273,7 +306,9 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let d = input.delta_screen;
     // 타원형 2D 가우시안: exp(-0.5 * (A·x² + B·xy + C·y²))
-    let power = -0.5 * (input.conic.x * d.x * d.x + input.conic.y * d.x * d.y + input.conic.z * d.y * d.y);
+    let power = -0.5 * (input.conic.x * d.x * d.x
+                      + input.conic.y * d.x * d.y
+                      + input.conic.z * d.y * d.y);
     // power > 0 은 공분산 역행렬이 퇴화한 경우에만 발생하며, 수치 오차를 방어한다.
     if power > 0.0 { discard; }
 

@@ -10,7 +10,6 @@ pub mod action;
 pub mod compute;
 pub mod data;
 
-use action::gpu::GaussianGpu;
 use action::{gpu, io, render};
 use compute::camera_ops;
 use data::app_state::AppState;
@@ -66,13 +65,9 @@ impl AppContext {
         let (device, queue, surface, config) = init_gpu(window).await;
         let state = AppState::new(gaussians);
         let proj_matrix = make_proj_matrix(&config);
-        let view_matrix = camera_ops::camera_to_view_matrix(state.camera);
 
         let gaussian_buffer = gpu::create_gaussian_buffer(&device, &state.gaussians);
-        let camera_pos = camera_ops::compute_camera_position(state.camera);
-        let viewport_size = [config.width as f32, config.height as f32];
-        let camera_buffer =
-            gpu::create_camera_buffer(&device, view_matrix, proj_matrix, camera_pos, viewport_size);
+        let camera_buffer = make_initial_camera_buffer(&device, state.camera, proj_matrix, &config);
         let shader = gpu::create_shader_module(&device, include_str!("shaders/render.wgsl"));
 
         let bind_group_layout = make_bind_group_layout(&device);
@@ -100,19 +95,19 @@ impl AppContext {
 
     /// 입력 이벤트를 받아 카메라 상태와 GPU 카메라 버퍼를 갱신한다.
     ///
-    /// 순서: 순수 계산(apply_input) → 상태 저장 → GPU 버퍼 쓰기(Side Effect)
+    /// 순서: 순수 계산(apply_input → build_camera_uniform) → GPU 버퍼 쓰기(Side Effect)
     fn update(&mut self, input: InputEvent) {
-        self.state.camera = apply_input(self.state.camera, input);
+        self.state = self
+            .state
+            .with_camera(apply_input(self.state.camera, input));
 
-        let view_matrix = camera_ops::camera_to_view_matrix(self.state.camera);
-        let camera_pos = camera_ops::compute_camera_position(self.state.camera);
         let viewport_size = [self.config.width as f32, self.config.height as f32];
-        let camera_data = gpu::CameraUniform {
-            view: view_matrix.to_cols_array(),
-            projection: self.proj_matrix.to_cols_array(),
-            camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
-            viewport: [viewport_size[0], viewport_size[1], 0.0, 0.0],
-        };
+        let camera_data = gpu::build_camera_uniform(
+            camera_ops::camera_to_view_matrix(self.state.camera),
+            self.proj_matrix,
+            camera_ops::compute_camera_position(self.state.camera),
+            viewport_size,
+        );
         gpu::update_buffer(&self.queue, &self.camera_buffer, &[camera_data]);
     }
 
@@ -147,16 +142,11 @@ impl AppContext {
     /// 현재 카메라 위치 기준으로 가우시안을 back-to-front 정렬해 GPU 버퍼를 갱신한다.
     ///
     /// 알파 블렌딩의 정확성을 위해 매 프레임 호출된다.
-    /// rayon 병렬 정렬을 사용하므로 멀티코어를 활용한다.
+    /// 정렬+변환(compute)은 `prepare_sorted_gaussians`가, GPU 업로드(action)는 이 함수가 담당한다.
     fn upload_sorted_gaussians(&self) {
         let camera_pos = camera_ops::compute_camera_position(self.state.camera);
-        let sorted: Vec<GaussianGpu> = compute::gaussian_ops::sort_gaussians_by_depth_parallel(
-            &self.state.gaussians,
-            camera_pos,
-        )
-        .iter()
-        .map(|&i| GaussianGpu::from(&self.state.gaussians[i]))
-        .collect();
+        let sorted =
+            compute::gaussian_ops::prepare_sorted_gaussians(&self.state.gaussians, camera_pos);
         gpu::update_buffer(&self.queue, &self.gaussian_buffer, &sorted);
     }
 }
@@ -229,6 +219,19 @@ fn make_proj_matrix(config: &SurfaceConfiguration) -> glam::Mat4 {
         0.1,
         100.0,
     )
+}
+
+/// 초기 카메라 상태로 GPU Uniform Buffer를 생성한다.
+fn make_initial_camera_buffer(
+    device: &Device,
+    camera: data::camera::CameraState,
+    proj_matrix: glam::Mat4,
+    config: &SurfaceConfiguration,
+) -> Buffer {
+    let view_matrix = camera_ops::camera_to_view_matrix(camera);
+    let camera_pos = camera_ops::compute_camera_position(camera);
+    let viewport_size = [config.width as f32, config.height as f32];
+    gpu::create_camera_buffer(device, view_matrix, proj_matrix, camera_pos, viewport_size)
 }
 
 /// 셰이더가 접근할 버퍼의 종류와 바인딩 번호를 정의하는 레이아웃을 생성한다.
@@ -316,12 +319,7 @@ fn make_render_pipeline(
     device.create_render_pipeline(&RenderPipelineDescriptor {
         label: Some("Render"),
         layout: Some(&layout),
-        vertex: VertexState {
-            module: shader,
-            entry_point: "vs_main",
-            buffers: &[], // 버텍스 버퍼 없이 vertex_index로만 위치 계산
-            compilation_options: PipelineCompilationOptions::default(),
-        },
+        vertex: make_vertex_state(shader),
         primitive: PrimitiveState {
             topology: PrimitiveTopology::TriangleList,
             ..Default::default()
@@ -342,6 +340,16 @@ fn make_render_pipeline(
     })
 }
 
+/// 버텍스 버퍼 없이 vertex_index로만 위치를 계산하는 VertexState를 생성한다.
+fn make_vertex_state(shader: &ShaderModule) -> VertexState<'_> {
+    VertexState {
+        module: shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: PipelineCompilationOptions::default(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pure input helpers
 // ---------------------------------------------------------------------------
@@ -353,6 +361,16 @@ fn apply_input(camera: data::camera::CameraState, input: InputEvent) -> data::ca
     match input {
         InputEvent::MouseMove(dx, dy) => camera_ops::update_camera_angles(camera, dx, dy),
         InputEvent::Zoom(delta) => camera_ops::zoom_camera(camera, delta),
+    }
+}
+
+/// 스크롤 델타를 줌 스칼라로 정규화한다.
+///
+/// `LineDelta`(마우스 휠)와 `PixelDelta`(트랙패드)를 동일한 단위로 변환한다.
+fn scroll_delta_to_zoom(delta: winit::event::MouseScrollDelta) -> f32 {
+    match delta {
+        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+        winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.01,
     }
 }
 
@@ -378,9 +396,16 @@ fn handle_mouse_input(
     }
 }
 
+/// 드래그 중이라면 이전 위치와의 델타로 카메라를 회전시킨다.
+fn apply_drag_if_active(cur: (f32, f32), last_mouse_pos: Option<(f32, f32)>, app: &mut AppContext) {
+    if let Some((lx, ly)) = last_mouse_pos {
+        app.update(InputEvent::MouseMove(cur.0 - lx, cur.1 - ly));
+    }
+}
+
 /// 마우스 이동 이벤트를 처리한다.
 ///
-/// 왼쪽 버튼이 눌린 상태에서만 이전 위치와의 델타를 계산해 카메라를 회전시킨다.
+/// 왼쪽 버튼이 눌린 상태에서만 델타를 계산해 카메라를 회전시킨다.
 fn handle_cursor_moved(
     position: winit::dpi::PhysicalPosition<f64>,
     mouse_pressed: bool,
@@ -389,22 +414,14 @@ fn handle_cursor_moved(
 ) {
     let cur = (position.x as f32, position.y as f32);
     if mouse_pressed {
-        if let Some((lx, ly)) = *last_mouse_pos {
-            app.update(InputEvent::MouseMove(cur.0 - lx, cur.1 - ly));
-        }
+        apply_drag_if_active(cur, *last_mouse_pos, app);
     }
     *last_mouse_pos = Some(cur);
 }
 
 /// 마우스 휠 이벤트를 처리한다.
-///
-/// `LineDelta`(마우스 휠)와 `PixelDelta`(트랙패드)를 모두 지원한다.
 fn handle_mouse_wheel(delta: winit::event::MouseScrollDelta, app: &mut AppContext) {
-    let zoom = match delta {
-        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
-        winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.01,
-    };
-    app.update(InputEvent::Zoom(zoom));
+    app.update(InputEvent::Zoom(scroll_delta_to_zoom(delta)));
 }
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ pub struct Gaussian {
     pub f_dc_0: f32,
     pub f_dc_1: f32,
     pub f_dc_2: f32,
-    /// 고차 SH 계수 (degree 1~3) — 시점에 따른 색상 변화 표현, 45 = (4²-1)×3
+    /// 고차 SH 계수 (degree 1~3) — 시점에 따른 색상 변화 표현, 45 = (3+5+7)×3채널
     pub f_rest: [f32; 45],
     /// 불투명도 (logit 공간 — sigmoid 적용 후 0~1)
     pub opacity: f32,
@@ -30,7 +30,8 @@ pub struct Gaussian {
     pub scale_0: f32,
     pub scale_1: f32,
     pub scale_2: f32,
-    /// 회전을 나타내는 쿼터니언 (w, x, y, z 순서)
+    /// 회전을 나타내는 쿼터니언 (rot_0=w, rot_1=x, rot_2=y, rot_3=z)
+    /// WGSL quat_to_mat의 r.x=w, r.y=x, r.z=y, r.w=z 매핑과 일치한다
     pub rot_0: f32,
     pub rot_1: f32,
     pub rot_2: f32,

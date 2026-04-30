@@ -25,24 +25,9 @@ pub fn compute_covariance(gaussian: &Gaussian) -> glam::Mat3 {
 /// 가우시안들을 카메라로부터 먼 순서(back-to-front)로 정렬한 인덱스 배열을 반환한다.
 ///
 /// 알파 블렌딩은 뒤에서 앞 순서로 그려야 올바른 결과가 나온다.
-/// 단일 스레드 버전 — 가우시안 수가 적을 때 적합하다.
+/// rayon 병렬 정렬로 멀티코어를 활용한다.
+/// 제곱 거리 비교로 sqrt 연산을 생략해 성능을 높인다.
 pub fn sort_gaussians_by_depth(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<usize> {
-    let mut indices: Vec<usize> = (0..gaussians.len()).collect();
-
-    // 제곱 거리 비교로 sqrt 연산을 생략해 성능을 높인다
-    indices.sort_by(|&a, &b| {
-        let dist_a = (gaussians[a].position() - camera_pos).length_squared();
-        let dist_b = (gaussians[b].position() - camera_pos).length_squared();
-        dist_b.partial_cmp(&dist_a).unwrap()
-    });
-
-    indices
-}
-
-/// `sort_gaussians_by_depth`의 rayon 병렬 버전.
-///
-/// 수십만 개 이상의 가우시안에서 멀티코어를 활용해 정렬 속도를 높인다.
-pub fn sort_gaussians_by_depth_parallel(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..gaussians.len()).collect();
 
     indices.par_sort_by(|&a, &b| {
@@ -52,6 +37,20 @@ pub fn sort_gaussians_by_depth_parallel(gaussians: &[Gaussian], camera_pos: Vec3
     });
 
     indices
+}
+
+/// 가우시안을 back-to-front 정렬한 뒤 GPU 업로드 형식(`GaussianGpu`)으로 변환한다.
+///
+/// 정렬(compute) + 변환(compute)을 하나의 순수 함수로 묶어
+/// `action` 레이어에서 GPU 업로드만 담당할 수 있게 한다.
+pub fn prepare_sorted_gaussians(
+    gaussians: &[Gaussian],
+    camera_pos: Vec3,
+) -> Vec<crate::action::gpu::GaussianGpu> {
+    sort_gaussians_by_depth(gaussians, camera_pos)
+        .iter()
+        .map(|&i| crate::action::gpu::GaussianGpu::from(&gaussians[i]))
+        .collect()
 }
 
 /// LOD(Level of Detail) 수준에 따라 렌더링할 가우시안의 인덱스를 필터링한다.
@@ -183,21 +182,6 @@ mod tests {
         assert!(indices.is_empty());
     }
 
-    // --- sort_gaussians_by_depth_parallel ---
-
-    #[test]
-    fn test_parallel_sort_same_as_sequential() {
-        let gaussians = vec![
-            gaussian_at(0.0, 0.0, 5.0),
-            gaussian_at(0.0, 0.0, 1.0),
-            gaussian_at(0.0, 0.0, 8.0),
-        ];
-        let camera_pos = Vec3::ZERO;
-        let seq = sort_gaussians_by_depth(&gaussians, camera_pos);
-        let par = sort_gaussians_by_depth_parallel(&gaussians, camera_pos);
-        assert_eq!(seq, par);
-    }
-
     // --- filter_gaussians_by_lod ---
 
     #[test]
@@ -269,5 +253,71 @@ mod tests {
     fn test_distances_batch_empty() {
         let dists = compute_distances_batch(&[], Vec3::ZERO);
         assert!(dists.is_empty());
+    }
+
+    // --- sort_gaussians_by_depth (추가 케이스) ---
+
+    #[test]
+    fn test_sort_with_non_origin_camera() {
+        // 카메라가 원점이 아닐 때도 거리 기준 정렬이 올바른지 확인
+        let gaussians = vec![
+            gaussian_at(0.0, 0.0, 3.0), // 카메라(z=5)에서 거리 2
+            gaussian_at(0.0, 0.0, 1.0), // 카메라(z=5)에서 거리 4
+        ];
+        let camera_pos = Vec3::new(0.0, 0.0, 5.0);
+        let indices = sort_gaussians_by_depth(&gaussians, camera_pos);
+        // index=1 (z=1)이 더 멀므로 먼저 와야 함
+        assert_eq!(indices[0], 1);
+        assert_eq!(indices[1], 0);
+    }
+
+    #[test]
+    fn test_sort_equidistant_gaussians_returns_all() {
+        // 동일 거리 가우시안이 있어도 결과 길이는 유지된다
+        let gaussians = vec![
+            gaussian_at(1.0, 0.0, 0.0),
+            gaussian_at(-1.0, 0.0, 0.0),
+            gaussian_at(0.0, 1.0, 0.0),
+        ];
+        let indices = sort_gaussians_by_depth(&gaussians, Vec3::ZERO);
+        assert_eq!(indices.len(), 3);
+    }
+
+    // --- prepare_sorted_gaussians ---
+
+    #[test]
+    fn test_prepare_sorted_gaussians_count() {
+        let gaussians = vec![
+            gaussian_at(0.0, 0.0, 1.0),
+            gaussian_at(0.0, 0.0, 5.0),
+            gaussian_at(0.0, 0.0, 3.0),
+        ];
+        let result = prepare_sorted_gaussians(&gaussians, Vec3::ZERO);
+        assert_eq!(result.len(), gaussians.len());
+    }
+
+    #[test]
+    fn test_prepare_sorted_gaussians_order() {
+        // back-to-front 순서 확인: z=5가 z=1보다 먼저 와야 함
+        let gaussians = vec![gaussian_at(0.0, 0.0, 1.0), gaussian_at(0.0, 0.0, 5.0)];
+        let result = prepare_sorted_gaussians(&gaussians, Vec3::ZERO);
+        // 첫 번째 GaussianGpu의 pos.z가 5.0이어야 함
+        assert!((result[0].pos[2] - 5.0).abs() < 1e-5);
+        assert!((result[1].pos[2] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_prepare_sorted_gaussians_empty() {
+        let result = prepare_sorted_gaussians(&[], Vec3::ZERO);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_prepare_sorted_gaussians_fields_transferred() {
+        // GaussianGpu 변환 시 opacity 필드가 올바르게 복사되는지 확인
+        let mut g = gaussian_at(1.0, 2.0, 3.0);
+        g.opacity = -1.5;
+        let result = prepare_sorted_gaussians(&[g], Vec3::ZERO);
+        assert!((result[0].opacity - (-1.5)).abs() < 1e-5);
     }
 }

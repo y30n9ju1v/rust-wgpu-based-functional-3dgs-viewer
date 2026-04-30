@@ -189,4 +189,49 @@ mod tests {
         assert_eq!(zoomed.theta, cam.theta);
         assert_eq!(zoomed.phi, cam.phi);
     }
+
+    // --- update_camera_angles (추가 케이스) ---
+
+    #[test]
+    fn test_angle_update_is_composable() {
+        // 두 번 나눠 적용한 결과가 한 번에 적용한 결과와 같아야 함
+        let cam = default_camera();
+        let once = update_camera_angles(cam, 100.0, 50.0);
+        let twice = update_camera_angles(update_camera_angles(cam, 50.0, 25.0), 50.0, 25.0);
+        assert!((once.theta - twice.theta).abs() < 1e-5);
+        assert!((once.phi - twice.phi).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_theta_wraps_continuously() {
+        // theta는 클램프 없이 2π를 넘어도 연속으로 증가해야 함
+        let cam = default_camera();
+        let result = update_camera_angles(cam, 100_000.0, 0.0);
+        // 카메라 위치 계산이 NaN 없이 유효해야 함
+        let pos = compute_camera_position(result);
+        assert!(pos.x.is_finite() && pos.y.is_finite() && pos.z.is_finite());
+    }
+
+    // --- camera_to_view_matrix (추가 케이스) ---
+
+    #[test]
+    fn test_view_matrix_camera_position_maps_to_origin() {
+        // 뷰 행렬은 카메라 위치 자체를 원점(로컬 공간)으로 변환해야 함
+        let cam = default_camera();
+        let pos = compute_camera_position(cam);
+        let view = camera_to_view_matrix(cam);
+        let cam_in_view = view * glam::Vec4::new(pos.x, pos.y, pos.z, 1.0);
+        assert!(cam_in_view.x.abs() < 1e-5);
+        assert!(cam_in_view.y.abs() < 1e-5);
+        assert!(cam_in_view.z.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_view_matrix_target_is_on_negative_z() {
+        // 오른손 좌표계에서 카메라가 바라보는 원점은 뷰 공간 -Z에 있어야 함
+        let cam = default_camera();
+        let view = camera_to_view_matrix(cam);
+        let target_in_view = view * glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        assert!(target_in_view.z < 0.0);
+    }
 }

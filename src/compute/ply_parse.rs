@@ -1,15 +1,48 @@
 use crate::data::gaussian::Gaussian;
 
+// PLY property 오프셋 상수 (bytes). 단위: bytes = field_index × 4.
+const OFF_X: usize = 0;
+const OFF_Y: usize = 4;
+const OFF_Z: usize = 8;
+// 법선 — 3DGS 렌더링에는 쓰이지 않지만 PLY 포맷 호환을 위해 오프셋을 보존한다
+const OFF_NX: usize = 12;
+const OFF_NY: usize = 16;
+const OFF_NZ: usize = 20;
+const OFF_F_DC_0: usize = 24;
+const OFF_F_DC_1: usize = 28;
+const OFF_F_DC_2: usize = 32;
+const OFF_F_REST: usize = 36; // 45 × 4 = 180 bytes
+const OFF_OPACITY: usize = 216;
+const OFF_SCALE_0: usize = 220;
+const OFF_SCALE_1: usize = 224;
+const OFF_SCALE_2: usize = 228;
+const OFF_ROT_0: usize = 232;
+const OFF_ROT_1: usize = 236;
+const OFF_ROT_2: usize = 240;
+const OFF_ROT_3: usize = 244;
+
+/// little-endian f32 4바이트를 읽는다.
+fn read_f32(data: &[u8], offset: usize) -> f32 {
+    f32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
+}
+
+/// f_rest 45개 계수를 읽는다.
+fn read_f_rest(data: &[u8]) -> [f32; 45] {
+    let mut f_rest = [0.0f32; 45];
+    for (j, val) in f_rest.iter_mut().enumerate() {
+        *val = read_f32(data, OFF_F_REST + j * 4);
+    }
+    f_rest
+}
+
 /// 바이너리 바이트 슬라이스 하나를 `Gaussian` 구조체 하나로 파싱한다.
 ///
 /// PLY 바이너리 포맷은 little-endian f32의 연속이며, 오프셋은 property 선언 순서와 일치한다.
-/// - 0..12   : pos (x, y, z)
-/// - 12..24  : normal (nx, ny, nz)
-/// - 24..36  : f_dc (0, 1, 2)
-/// - 36..216 : f_rest[0..45]  (45 × 4 = 180 bytes)
-/// - 216     : opacity
-/// - 220..232: scale (0, 1, 2)
-/// - 232..248: rot (0, 1, 2, 3)
 pub fn parse_gaussian_from_bytes(data: &[u8]) -> Result<Gaussian, String> {
     let required = std::mem::size_of::<Gaussian>();
     if data.len() < required {
@@ -20,40 +53,25 @@ pub fn parse_gaussian_from_bytes(data: &[u8]) -> Result<Gaussian, String> {
         ));
     }
 
-    // 클로저로 오프셋 → f32 변환을 재사용한다 (little-endian 4바이트)
-    let read_f32 = |offset: usize| -> f32 {
-        f32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ])
-    };
-
-    let mut f_rest = [0.0f32; 45];
-    for (j, val) in f_rest.iter_mut().enumerate() {
-        *val = read_f32(36 + j * 4);
-    }
-
     Ok(Gaussian {
-        x: read_f32(0),
-        y: read_f32(4),
-        z: read_f32(8),
-        nx: read_f32(12),
-        ny: read_f32(16),
-        nz: read_f32(20),
-        f_dc_0: read_f32(24),
-        f_dc_1: read_f32(28),
-        f_dc_2: read_f32(32),
-        f_rest,
-        opacity: read_f32(216),
-        scale_0: read_f32(220),
-        scale_1: read_f32(224),
-        scale_2: read_f32(228),
-        rot_0: read_f32(232),
-        rot_1: read_f32(236),
-        rot_2: read_f32(240),
-        rot_3: read_f32(244),
+        x: read_f32(data, OFF_X),
+        y: read_f32(data, OFF_Y),
+        z: read_f32(data, OFF_Z),
+        nx: read_f32(data, OFF_NX),
+        ny: read_f32(data, OFF_NY),
+        nz: read_f32(data, OFF_NZ),
+        f_dc_0: read_f32(data, OFF_F_DC_0),
+        f_dc_1: read_f32(data, OFF_F_DC_1),
+        f_dc_2: read_f32(data, OFF_F_DC_2),
+        f_rest: read_f_rest(data),
+        opacity: read_f32(data, OFF_OPACITY),
+        scale_0: read_f32(data, OFF_SCALE_0),
+        scale_1: read_f32(data, OFF_SCALE_1),
+        scale_2: read_f32(data, OFF_SCALE_2),
+        rot_0: read_f32(data, OFF_ROT_0),
+        rot_1: read_f32(data, OFF_ROT_1),
+        rot_2: read_f32(data, OFF_ROT_2),
+        rot_3: read_f32(data, OFF_ROT_3),
     })
 }
 
@@ -238,5 +256,64 @@ mod tests {
     fn test_parse_zero_count_returns_empty() {
         let gaussians = parse_gaussians(&[], STRIDE, 0).unwrap();
         assert!(gaussians.is_empty());
+    }
+
+    // --- read_f32 ---
+
+    #[test]
+    fn test_read_f32_zero() {
+        let data = 0.0f32.to_le_bytes();
+        assert_eq!(read_f32(&data, 0), 0.0);
+    }
+
+    #[test]
+    fn test_read_f32_one() {
+        let data = 1.0f32.to_le_bytes();
+        assert_eq!(read_f32(&data, 0), 1.0);
+    }
+
+    #[test]
+    fn test_read_f32_with_offset() {
+        let mut data = vec![0u8; 8];
+        data[4..8].copy_from_slice(&42.0f32.to_le_bytes());
+        assert_eq!(read_f32(&data, 4), 42.0);
+    }
+
+    #[test]
+    fn test_read_f32_negative() {
+        let data = (-3.14f32).to_le_bytes();
+        let v = read_f32(&data, 0);
+        assert!((v - (-3.14f32)).abs() < 1e-6);
+    }
+
+    // --- read_f_rest ---
+
+    #[test]
+    fn test_read_f_rest_all_zeros() {
+        let data = vec![0u8; STRIDE];
+        let f_rest = read_f_rest(&data);
+        assert!(f_rest.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_read_f_rest_values() {
+        let mut data = vec![0u8; STRIDE];
+        for i in 0..45usize {
+            let val = (i as f32) * 0.1;
+            let bytes = val.to_le_bytes();
+            let off = OFF_F_REST + i * 4;
+            data[off..off + 4].copy_from_slice(&bytes);
+        }
+        let f_rest = read_f_rest(&data);
+        for (i, &v) in f_rest.iter().enumerate() {
+            assert!((v - i as f32 * 0.1).abs() < 1e-6, "index {i} mismatch");
+        }
+    }
+
+    #[test]
+    fn test_read_f_rest_length() {
+        let data = vec![0u8; STRIDE];
+        let f_rest = read_f_rest(&data);
+        assert_eq!(f_rest.len(), 45);
     }
 }
