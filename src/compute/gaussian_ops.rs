@@ -2,11 +2,16 @@ use crate::data::gaussian::Gaussian;
 use glam::{Quat, Vec3};
 use rayon::prelude::*;
 
+/// 쿼터니언 배열 [w, x, y, z]를 3×3 회전 행렬로 변환한다.
 pub fn quat_to_mat3(q: &[f32; 4]) -> glam::Mat3 {
     let quat = Quat::from_array(*q);
     glam::Mat3::from_quat(quat)
 }
 
+/// 3DGS 공분산 행렬 Σ = R·S·Sᵀ·Rᵀ 를 계산한다.
+///
+/// S는 scale을 대각 원소로 하는 행렬, R은 rotation 쿼터니언에서 얻은 회전 행렬.
+/// 결과는 타원체 모양을 결정하는 3×3 대칭 행렬이다.
 pub fn compute_covariance(gaussian: &Gaussian) -> glam::Mat3 {
     let scale = Vec3::new(gaussian.scale_0, gaussian.scale_1, gaussian.scale_2);
     let rot = quat_to_mat3(&gaussian.rotation());
@@ -17,9 +22,14 @@ pub fn compute_covariance(gaussian: &Gaussian) -> glam::Mat3 {
     rs * rs.transpose()
 }
 
+/// 가우시안들을 카메라로부터 먼 순서(back-to-front)로 정렬한 인덱스 배열을 반환한다.
+///
+/// 알파 블렌딩은 뒤에서 앞 순서로 그려야 올바른 결과가 나온다.
+/// 단일 스레드 버전 — 가우시안 수가 적을 때 적합하다.
 pub fn sort_gaussians_by_depth(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..gaussians.len()).collect();
 
+    // 제곱 거리 비교로 sqrt 연산을 생략해 성능을 높인다
     indices.sort_by(|&a, &b| {
         let dist_a = (gaussians[a].position() - camera_pos).length_squared();
         let dist_b = (gaussians[b].position() - camera_pos).length_squared();
@@ -29,6 +39,9 @@ pub fn sort_gaussians_by_depth(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<
     indices
 }
 
+/// `sort_gaussians_by_depth`의 rayon 병렬 버전.
+///
+/// 수십만 개 이상의 가우시안에서 멀티코어를 활용해 정렬 속도를 높인다.
 pub fn sort_gaussians_by_depth_parallel(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..gaussians.len()).collect();
 
@@ -41,11 +54,16 @@ pub fn sort_gaussians_by_depth_parallel(gaussians: &[Gaussian], camera_pos: Vec3
     indices
 }
 
+/// LOD(Level of Detail) 수준에 따라 렌더링할 가우시안의 인덱스를 필터링한다.
+///
+/// `lod_level`이 0이면 모든 가우시안, 1이면 1/2, 2이면 1/4 씩 선택한다.
+/// 추가로 카메라로부터 50.0 이상 떨어진 가우시안은 제외한다.
 pub fn filter_gaussians_by_lod(
     gaussians: &[Gaussian],
     camera_pos: Vec3,
     lod_level: u32,
 ) -> Vec<usize> {
+    // lod_level=0 → skip_rate=1(전부), lod_level=1 → 2(절반), lod_level=2 → 4(1/4)
     let skip_rate = (1usize) << lod_level;
     gaussians
         .iter()
@@ -55,20 +73,28 @@ pub fn filter_gaussians_by_lod(
         .collect()
 }
 
+/// LOD와 거리 조건을 모두 만족하는지 확인하는 술어 함수.
 fn is_visible_at_lod(index: usize, g: &Gaussian, camera_pos: Vec3, skip_rate: usize) -> bool {
     index.is_multiple_of(skip_rate) && (g.position() - camera_pos).length() < 50.0
 }
 
+/// 가우시안 위치 전체를 뷰 공간으로 일괄 변환한다.
+///
+/// 컴파일러가 루프를 SIMD로 자동 벡터화할 수 있도록 순수 iterator 형태로 작성됐다.
 pub fn transform_gaussians_batch(gaussians: &[Gaussian], view_matrix: glam::Mat4) -> Vec<Vec3> {
     gaussians
         .iter()
         .map(|g| {
             let pos = Vec3::new(g.x, g.y, g.z);
+            // w=1.0 을 추가해 위치 벡터로 변환 후 다시 Vec3로 잘라낸다
             (view_matrix * pos.extend(1.0)).truncate()
         })
         .collect()
 }
 
+/// 가우시안 전체의 카메라까지의 제곱 거리를 일괄 계산한다.
+///
+/// 제곱 거리를 사용해 sqrt 비용을 절약한다 (순위 비교에만 사용 시 충분).
 pub fn compute_distances_batch(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<f32> {
     gaussians
         .iter()

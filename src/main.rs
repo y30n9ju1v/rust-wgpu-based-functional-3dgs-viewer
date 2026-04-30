@@ -20,11 +20,22 @@ use data::gaussian::Gaussian;
 // Types
 // ---------------------------------------------------------------------------
 
+/// 사용자 입력을 추상화한 열거형.
+///
+/// winit 이벤트를 직접 전달하는 대신 이 타입으로 변환해
+/// `AppContext::update`가 winit에 직접 의존하지 않도록 분리한다.
 enum InputEvent {
+    /// 마우스 드래그 델타 (dx, dy) — 픽셀 단위
     MouseMove(f32, f32),
+    /// 스크롤 줌 델타 — 양수이면 줌인
     Zoom(f32),
 }
 
+/// GPU 리소스와 앱 상태를 함께 보유하는 컨텍스트.
+///
+/// GPU 리소스(device, queue, surface, pipeline 등)는 Side Effect를 일으키므로
+/// `action` 레이어에서 생성하고 여기에 보관한다.
+/// 순수 앱 상태(`state`)는 `data` 레이어 타입을 사용한다.
 struct AppContext {
     state: AppState,
     device: Device,
@@ -34,8 +45,11 @@ struct AppContext {
     config: SurfaceConfiguration,
     pipeline: RenderPipeline,
     bind_group: BindGroup,
+    /// 가우시안 데이터를 담는 GPU Storage Buffer — 매 프레임 깊이 정렬 후 갱신됨
     gaussian_buffer: Buffer,
+    /// 카메라 뷰/프로젝션 행렬을 담는 GPU Uniform Buffer
     camera_buffer: Buffer,
+    /// 창 크기가 바뀌지 않는 한 고정되는 투영 행렬 (캐싱)
     proj_matrix: glam::Mat4,
 }
 
@@ -44,6 +58,10 @@ struct AppContext {
 // ---------------------------------------------------------------------------
 
 impl AppContext {
+    /// GPU를 초기화하고 모든 리소스를 생성해 `AppContext`를 반환한다.
+    ///
+    /// `pollster::block_on`으로 async를 블로킹 실행한다.
+    /// winit 이벤트 루프가 메인 스레드를 점유하므로 tokio와 함께 쓸 수 없다.
     async fn new(window: Arc<winit::window::Window>, gaussians: Vec<Gaussian>) -> Self {
         let (device, queue, surface, config) = init_gpu(window).await;
         let state = AppState::new(gaussians);
@@ -77,6 +95,9 @@ impl AppContext {
         }
     }
 
+    /// 입력 이벤트를 받아 카메라 상태와 GPU 카메라 버퍼를 갱신한다.
+    ///
+    /// 순서: 순수 계산(apply_input) → 상태 저장 → GPU 버퍼 쓰기(Side Effect)
     fn update(&mut self, input: InputEvent) {
         self.state.camera = apply_input(self.state.camera, input);
 
@@ -88,11 +109,17 @@ impl AppContext {
         gpu::update_buffer(&self.queue, &self.camera_buffer, &[camera_data]);
     }
 
+    /// 한 프레임을 렌더링한다.
+    ///
+    /// 1. 가우시안을 back-to-front 정렬 후 GPU 버퍼 갱신
+    /// 2. 스왑체인에서 출력 텍스처 획득
+    /// 3. 렌더 패스 실행
+    /// 4. 텍스처를 화면에 출력
     fn render(&self) {
         self.upload_sorted_gaussians();
 
         let Ok(output) = self.surface.get_current_texture() else {
-            return;
+            return; // 창이 최소화됐거나 surface가 유효하지 않으면 건너뜀
         };
         let view = output
             .texture
@@ -110,6 +137,10 @@ impl AppContext {
         output.present();
     }
 
+    /// 현재 카메라 위치 기준으로 가우시안을 back-to-front 정렬해 GPU 버퍼를 갱신한다.
+    ///
+    /// 알파 블렌딩의 정확성을 위해 매 프레임 호출된다.
+    /// rayon 병렬 정렬을 사용하므로 멀티코어를 활용한다.
     fn upload_sorted_gaussians(&self) {
         let camera_pos = camera_ops::compute_camera_position(self.state.camera);
         let sorted: Vec<GaussianGpu> = compute::gaussian_ops::sort_gaussians_by_depth_parallel(
@@ -127,6 +158,9 @@ impl AppContext {
 // GPU initialisation helpers
 // ---------------------------------------------------------------------------
 
+/// wgpu 인스턴스 → 어댑터 → 디바이스/큐 → 서피스 설정까지 GPU 초기화를 수행한다.
+///
+/// `Backends::all()`로 플랫폼에 따라 Metal / Vulkan / DX12 중 최적을 자동 선택한다.
 async fn init_gpu(
     window: Arc<winit::window::Window>,
 ) -> (Device, Queue, Surface<'static>, SurfaceConfiguration) {
@@ -159,6 +193,9 @@ async fn init_gpu(
     (device, queue, surface, config)
 }
 
+/// 서피스 포맷과 창 크기를 기반으로 `SurfaceConfiguration`을 생성한다.
+///
+/// `formats[0]`은 어댑터가 지원하는 기본(권장) 포맷이다.
 fn make_surface_config(
     surface: &Surface,
     adapter: &Adapter,
@@ -170,22 +207,27 @@ fn make_surface_config(
         format: surface.get_capabilities(adapter).formats[0],
         width: size.width,
         height: size.height,
-        present_mode: PresentMode::Fifo,
+        present_mode: PresentMode::Fifo, // VSync 활성화
         desired_maximum_frame_latency: 2,
         alpha_mode: CompositeAlphaMode::Auto,
         view_formats: vec![],
     }
 }
 
+/// 45° FOV, 현재 창 비율, near=0.1, far=100.0의 투영 행렬을 생성한다.
 fn make_proj_matrix(config: &SurfaceConfiguration) -> glam::Mat4 {
     glam::Mat4::perspective_rh(
-        std::f32::consts::FRAC_PI_4,
+        std::f32::consts::FRAC_PI_4, // 45° vertical FOV
         config.width as f32 / config.height as f32,
         0.1,
         100.0,
     )
 }
 
+/// 셰이더가 접근할 버퍼의 종류와 바인딩 번호를 정의하는 레이아웃을 생성한다.
+///
+/// - binding 0: CameraUniform (Uniform Buffer, vertex shader)
+/// - binding 1: Gaussian Storage (Storage Buffer read-only, vertex shader)
 fn make_bind_group_layout(device: &Device) -> BindGroupLayout {
     device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("Main"),
@@ -196,6 +238,7 @@ fn make_bind_group_layout(device: &Device) -> BindGroupLayout {
     })
 }
 
+/// binding=0, vertex shader에서 읽는 Uniform Buffer 레이아웃 항목
 fn camera_binding_layout_entry() -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding: 0,
@@ -209,6 +252,7 @@ fn camera_binding_layout_entry() -> BindGroupLayoutEntry {
     }
 }
 
+/// binding=1, vertex shader에서 읽는 read-only Storage Buffer 레이아웃 항목
 fn gaussian_binding_layout_entry() -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding: 1,
@@ -222,6 +266,7 @@ fn gaussian_binding_layout_entry() -> BindGroupLayoutEntry {
     }
 }
 
+/// 실제 GPU 버퍼를 레이아웃에 바인딩하는 `BindGroup`을 생성한다.
 fn make_bind_group(
     device: &Device,
     layout: &BindGroupLayout,
@@ -244,6 +289,11 @@ fn make_bind_group(
     })
 }
 
+/// 셰이더, 레이아웃, 포맷을 조합해 렌더 파이프라인을 생성한다.
+///
+/// - 버텍스 버퍼 없음: vertex_index로 쿼드를 인라인 생성
+/// - 깊이 버퍼 없음: 깊이 정렬은 CPU에서 back-to-front로 처리
+/// - 알파 블렌딩: `BlendState::ALPHA_BLENDING`으로 가우시안 반투명 합성
 fn make_render_pipeline(
     device: &Device,
     shader: &ShaderModule,
@@ -262,7 +312,7 @@ fn make_render_pipeline(
         vertex: VertexState {
             module: shader,
             entry_point: "vs_main",
-            buffers: &[],
+            buffers: &[], // 버텍스 버퍼 없이 vertex_index로만 위치 계산
             compilation_options: PipelineCompilationOptions::default(),
         },
         primitive: PrimitiveState {
@@ -289,6 +339,9 @@ fn make_render_pipeline(
 // Pure input helpers
 // ---------------------------------------------------------------------------
 
+/// 입력 이벤트를 카메라 상태 변환 순수 함수로 라우팅한다.
+///
+/// Side Effect 없이 새 `CameraState`만 반환한다.
 fn apply_input(camera: data::camera::CameraState, input: InputEvent) -> data::camera::CameraState {
     match input {
         InputEvent::MouseMove(dx, dy) => camera_ops::update_camera_angles(camera, dx, dy),
@@ -300,6 +353,9 @@ fn apply_input(camera: data::camera::CameraState, input: InputEvent) -> data::ca
 // Event handlers
 // ---------------------------------------------------------------------------
 
+/// 마우스 버튼 이벤트를 처리한다.
+///
+/// 왼쪽 버튼 Press/Release만 추적하고, Release 시 드래그 시작점을 초기화한다.
 fn handle_mouse_input(
     state: winit::event::ElementState,
     button: winit::event::MouseButton,
@@ -315,6 +371,9 @@ fn handle_mouse_input(
     }
 }
 
+/// 마우스 이동 이벤트를 처리한다.
+///
+/// 왼쪽 버튼이 눌린 상태에서만 이전 위치와의 델타를 계산해 카메라를 회전시킨다.
 fn handle_cursor_moved(
     position: winit::dpi::PhysicalPosition<f64>,
     mouse_pressed: bool,
@@ -330,6 +389,9 @@ fn handle_cursor_moved(
     *last_mouse_pos = Some(cur);
 }
 
+/// 마우스 휠 이벤트를 처리한다.
+///
+/// `LineDelta`(마우스 휠)와 `PixelDelta`(트랙패드)를 모두 지원한다.
 fn handle_mouse_wheel(delta: winit::event::MouseScrollDelta, app: &mut AppContext) {
     let zoom = match delta {
         winit::event::MouseScrollDelta::LineDelta(_, y) => y,
@@ -360,10 +422,12 @@ fn main() {
     });
     log::info!("Loaded {} gaussians", gaussians.len());
 
+    // pollster로 async GPU 초기화를 블로킹 실행
     let mut app = pollster::block_on(AppContext::new(Arc::clone(&window), gaussians));
     let mut mouse_pressed = false;
     let mut last_mouse_pos: Option<(f32, f32)> = None;
 
+    // ControlFlow::Poll — 이벤트가 없어도 계속 루프를 돌며 매 프레임 렌더링
     let _ = event_loop.run(move |event, elwt| {
         handle_event(
             event,
@@ -377,6 +441,9 @@ fn main() {
     });
 }
 
+/// 최상위 이벤트 디스패처.
+///
+/// `AboutToWait`(이벤트 큐 소진)마다 redraw를 요청해 게임 루프처럼 동작하게 한다.
 fn handle_event(
     event: Event<()>,
     elwt: &winit::event_loop::EventLoopWindowTarget<()>,
@@ -394,6 +461,7 @@ fn handle_event(
     }
 }
 
+/// 윈도우 이벤트를 종류별로 분기해 적절한 핸들러에 위임한다.
 fn handle_window_event(
     event: WindowEvent,
     elwt: &winit::event_loop::EventLoopWindowTarget<()>,

@@ -1,5 +1,15 @@
 use crate::data::gaussian::Gaussian;
 
+/// 바이너리 바이트 슬라이스 하나를 `Gaussian` 구조체 하나로 파싱한다.
+///
+/// PLY 바이너리 포맷은 little-endian f32의 연속이며, 오프셋은 property 선언 순서와 일치한다.
+/// - 0..12   : pos (x, y, z)
+/// - 12..24  : normal (nx, ny, nz)
+/// - 24..36  : f_dc (0, 1, 2)
+/// - 36..216 : f_rest[0..45]  (45 × 4 = 180 bytes)
+/// - 216     : opacity
+/// - 220..232: scale (0, 1, 2)
+/// - 232..248: rot (0, 1, 2, 3)
 pub fn parse_gaussian_from_bytes(data: &[u8]) -> Result<Gaussian, String> {
     let required = std::mem::size_of::<Gaussian>();
     if data.len() < required {
@@ -10,6 +20,7 @@ pub fn parse_gaussian_from_bytes(data: &[u8]) -> Result<Gaussian, String> {
         ));
     }
 
+    // 클로저로 오프셋 → f32 변환을 재사용한다 (little-endian 4바이트)
     let read_f32 = |offset: usize| -> f32 {
         f32::from_le_bytes([
             data[offset],
@@ -46,6 +57,9 @@ pub fn parse_gaussian_from_bytes(data: &[u8]) -> Result<Gaussian, String> {
     })
 }
 
+/// 바이너리 데이터 전체를 `stride` 간격으로 나눠 `count`개의 `Gaussian`으로 파싱한다.
+///
+/// 각 가우시안은 `stride` 바이트를 차지하며, 에러가 하나라도 있으면 전체가 실패한다.
 pub fn parse_gaussians(data: &[u8], stride: usize, count: usize) -> Result<Vec<Gaussian>, String> {
     (0..count)
         .map(|i| {
