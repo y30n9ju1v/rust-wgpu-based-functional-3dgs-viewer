@@ -68,3 +68,151 @@ pub fn parse_gaussians(data: &[u8], stride: usize, count: usize) -> Result<Vec<G
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STRIDE: usize = std::mem::size_of::<Gaussian>();
+
+    /// f32 값을 little-endian 4바이트로 직렬화한다.
+    fn f32_le(v: f32) -> [u8; 4] {
+        v.to_le_bytes()
+    }
+
+    /// 지정된 필드 값들로 채운 248바이트 PLY 레코드를 생성한다.
+    /// 나머지 필드는 0.0으로 채운다.
+    fn make_record(
+        pos: [f32; 3],
+        normal: [f32; 3],
+        f_dc: [f32; 3],
+        f_rest: [f32; 45],
+        opacity: f32,
+        scale: [f32; 3],
+        rot: [f32; 4],
+    ) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(STRIDE);
+        for v in pos { buf.extend(f32_le(v)); }
+        for v in normal { buf.extend(f32_le(v)); }
+        for v in f_dc { buf.extend(f32_le(v)); }
+        for v in f_rest { buf.extend(f32_le(v)); }
+        buf.extend(f32_le(opacity));
+        for v in scale { buf.extend(f32_le(v)); }
+        for v in rot { buf.extend(f32_le(v)); }
+        assert_eq!(buf.len(), STRIDE);
+        buf
+    }
+
+    fn default_record() -> Vec<u8> {
+        make_record(
+            [1.0, 2.0, 3.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.6, 0.7],
+            [0.1; 45],
+            0.8,
+            [0.2, 0.3, 0.4],
+            [1.0, 0.0, 0.0, 0.0],
+        )
+    }
+
+    // --- parse_gaussian_from_bytes ---
+
+    #[test]
+    fn test_parse_position() {
+        let data = default_record();
+        let g = parse_gaussian_from_bytes(&data).unwrap();
+        assert!((g.x - 1.0).abs() < 1e-6);
+        assert!((g.y - 2.0).abs() < 1e-6);
+        assert!((g.z - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_normal() {
+        let data = default_record();
+        let g = parse_gaussian_from_bytes(&data).unwrap();
+        assert!((g.nx - 0.0).abs() < 1e-6);
+        assert!((g.ny - 1.0).abs() < 1e-6);
+        assert!((g.nz - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_color_dc() {
+        let data = default_record();
+        let g = parse_gaussian_from_bytes(&data).unwrap();
+        assert!((g.f_dc_0 - 0.5).abs() < 1e-6);
+        assert!((g.f_dc_1 - 0.6).abs() < 1e-6);
+        assert!((g.f_dc_2 - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_f_rest() {
+        let data = default_record();
+        let g = parse_gaussian_from_bytes(&data).unwrap();
+        for v in g.f_rest {
+            assert!((v - 0.1).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_parse_opacity() {
+        let data = default_record();
+        let g = parse_gaussian_from_bytes(&data).unwrap();
+        assert!((g.opacity - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_scale() {
+        let data = default_record();
+        let g = parse_gaussian_from_bytes(&data).unwrap();
+        assert!((g.scale_0 - 0.2).abs() < 1e-6);
+        assert!((g.scale_1 - 0.3).abs() < 1e-6);
+        assert!((g.scale_2 - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_rotation() {
+        let data = default_record();
+        let g = parse_gaussian_from_bytes(&data).unwrap();
+        assert!((g.rot_0 - 1.0).abs() < 1e-6);
+        assert!((g.rot_1 - 0.0).abs() < 1e-6);
+        assert!((g.rot_2 - 0.0).abs() < 1e-6);
+        assert!((g.rot_3 - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_insufficient_data_returns_error() {
+        let short = vec![0u8; STRIDE - 1];
+        assert!(parse_gaussian_from_bytes(&short).is_err());
+    }
+
+    #[test]
+    fn test_parse_error_message_contains_byte_counts() {
+        let short = vec![0u8; 10];
+        let err = parse_gaussian_from_bytes(&short).unwrap_err();
+        assert!(err.contains("10"));
+        assert!(err.contains(&STRIDE.to_string()));
+    }
+
+    // --- parse_gaussians ---
+
+    #[test]
+    fn test_parse_two_gaussians() {
+        let r1 = make_record(
+            [1.0, 0.0, 0.0], [0.0; 3], [0.0; 3], [0.0; 45], 0.0, [0.0; 3], [1.0, 0.0, 0.0, 0.0],
+        );
+        let r2 = make_record(
+            [2.0, 0.0, 0.0], [0.0; 3], [0.0; 3], [0.0; 45], 0.0, [0.0; 3], [1.0, 0.0, 0.0, 0.0],
+        );
+        let data = [r1, r2].concat();
+        let gaussians = parse_gaussians(&data, STRIDE, 2).unwrap();
+        assert_eq!(gaussians.len(), 2);
+        assert!((gaussians[0].x - 1.0).abs() < 1e-6);
+        assert!((gaussians[1].x - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_zero_count_returns_empty() {
+        let gaussians = parse_gaussians(&[], STRIDE, 0).unwrap();
+        assert!(gaussians.is_empty());
+    }
+}

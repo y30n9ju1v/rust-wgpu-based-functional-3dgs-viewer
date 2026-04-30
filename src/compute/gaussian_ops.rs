@@ -101,3 +101,173 @@ pub fn compute_distances_batch(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<
         .map(|g| (g.position() - camera_pos).length_squared())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    /// 지정한 위치만 설정하고 나머지는 0으로 채운 Gaussian을 생성한다.
+    fn gaussian_at(x: f32, y: f32, z: f32) -> Gaussian {
+        Gaussian {
+            x,
+            y,
+            z,
+            ..Gaussian::zeroed()
+        }
+    }
+
+    // --- quat_to_mat3 ---
+
+    #[test]
+    fn test_identity_quat_gives_identity_mat3() {
+        // glam::Quat::from_array는 [x, y, z, w] 순서
+        // 단위 쿼터니언: x=y=z=0, w=1
+        let mat = quat_to_mat3(&[0.0, 0.0, 0.0, 1.0]);
+        assert!((mat - glam::Mat3::IDENTITY).abs_diff_eq(glam::Mat3::ZERO, 1e-5));
+    }
+
+    // --- compute_covariance ---
+
+    #[test]
+    fn test_covariance_is_symmetric() {
+        // 공분산 행렬은 항상 대칭(Σ = Σᵀ)이어야 함
+        let g = Gaussian {
+            scale_0: 1.0,
+            scale_1: 2.0,
+            scale_2: 0.5,
+            rot_0: 1.0, // 단위 쿼터니언
+            ..Gaussian::zeroed()
+        };
+        let cov = compute_covariance(&g);
+        assert!((cov - cov.transpose()).abs_diff_eq(glam::Mat3::ZERO, 1e-5));
+    }
+
+    #[test]
+    fn test_covariance_identity_rotation_equals_scale_squared() {
+        // 회전 없이(단위 쿼터니언) scale=(s0,s1,s2)이면 Σ = diag(s0², s1², s2²)
+        let g = Gaussian {
+            scale_0: 2.0,
+            scale_1: 3.0,
+            scale_2: 4.0,
+            rot_0: 1.0, // 단위 쿼터니언 w=1
+            ..Gaussian::zeroed()
+        };
+        let cov = compute_covariance(&g);
+        assert!((cov.x_axis.x - 4.0).abs() < 1e-5); // 2² = 4
+        assert!((cov.y_axis.y - 9.0).abs() < 1e-5); // 3² = 9
+        assert!((cov.z_axis.z - 16.0).abs() < 1e-5); // 4² = 16
+    }
+
+    // --- sort_gaussians_by_depth ---
+
+    #[test]
+    fn test_sort_back_to_front_order() {
+        // 카메라가 원점에 있을 때, z=10이 z=1보다 더 멀므로 앞에 와야 함
+        let gaussians = vec![gaussian_at(0.0, 0.0, 1.0), gaussian_at(0.0, 0.0, 10.0)];
+        let indices = sort_gaussians_by_depth(&gaussians, Vec3::ZERO);
+        assert_eq!(indices[0], 1); // 더 먼 것(index=1, z=10)이 먼저
+        assert_eq!(indices[1], 0);
+    }
+
+    #[test]
+    fn test_sort_single_gaussian() {
+        let gaussians = vec![gaussian_at(1.0, 2.0, 3.0)];
+        let indices = sort_gaussians_by_depth(&gaussians, Vec3::ZERO);
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn test_sort_empty_gaussians() {
+        let indices = sort_gaussians_by_depth(&[], Vec3::ZERO);
+        assert!(indices.is_empty());
+    }
+
+    // --- sort_gaussians_by_depth_parallel ---
+
+    #[test]
+    fn test_parallel_sort_same_as_sequential() {
+        let gaussians = vec![
+            gaussian_at(0.0, 0.0, 5.0),
+            gaussian_at(0.0, 0.0, 1.0),
+            gaussian_at(0.0, 0.0, 8.0),
+        ];
+        let camera_pos = Vec3::ZERO;
+        let seq = sort_gaussians_by_depth(&gaussians, camera_pos);
+        let par = sort_gaussians_by_depth_parallel(&gaussians, camera_pos);
+        assert_eq!(seq, par);
+    }
+
+    // --- filter_gaussians_by_lod ---
+
+    #[test]
+    fn test_lod_0_returns_all_within_range() {
+        let gaussians = vec![
+            gaussian_at(0.0, 0.0, 1.0),
+            gaussian_at(0.0, 0.0, 2.0),
+            gaussian_at(0.0, 0.0, 3.0),
+        ];
+        let indices = filter_gaussians_by_lod(&gaussians, Vec3::ZERO, 0);
+        assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_lod_1_returns_every_other() {
+        // lod_level=1 → skip_rate=2 → 짝수 인덱스만
+        let gaussians = vec![
+            gaussian_at(0.0, 0.0, 1.0), // index 0 → 포함
+            gaussian_at(0.0, 0.0, 2.0), // index 1 → 제외
+            gaussian_at(0.0, 0.0, 3.0), // index 2 → 포함
+            gaussian_at(0.0, 0.0, 4.0), // index 3 → 제외
+        ];
+        let indices = filter_gaussians_by_lod(&gaussians, Vec3::ZERO, 1);
+        assert_eq!(indices, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_lod_excludes_far_gaussians() {
+        // 거리 50.0 이상은 제외
+        let gaussians = vec![
+            gaussian_at(0.0, 0.0, 1.0),  // 가까움 → 포함
+            gaussian_at(0.0, 0.0, 60.0), // 멀음 → 제외
+        ];
+        let indices = filter_gaussians_by_lod(&gaussians, Vec3::ZERO, 0);
+        assert_eq!(indices, vec![0]);
+    }
+
+    // --- transform_gaussians_batch ---
+
+    #[test]
+    fn test_transform_with_identity_unchanged() {
+        let gaussians = vec![gaussian_at(1.0, 2.0, 3.0)];
+        let result = transform_gaussians_batch(&gaussians, glam::Mat4::IDENTITY);
+        assert!((result[0] - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-5);
+    }
+
+    #[test]
+    fn test_transform_translation() {
+        let gaussians = vec![gaussian_at(0.0, 0.0, 0.0)];
+        let t = glam::Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0));
+        let result = transform_gaussians_batch(&gaussians, t);
+        assert!((result[0] - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-5);
+    }
+
+    // --- compute_distances_batch ---
+
+    #[test]
+    fn test_distances_batch_values() {
+        let gaussians = vec![
+            gaussian_at(3.0, 0.0, 0.0), // 원점에서 거리 3 → 제곱 9
+            gaussian_at(0.0, 4.0, 0.0), // 원점에서 거리 4 → 제곱 16
+        ];
+        let dists = compute_distances_batch(&gaussians, Vec3::ZERO);
+        assert!((dists[0] - 9.0).abs() < 1e-5);
+        assert!((dists[1] - 16.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_distances_batch_empty() {
+        let dists = compute_distances_batch(&[], Vec3::ZERO);
+        assert!(dists.is_empty());
+    }
+}

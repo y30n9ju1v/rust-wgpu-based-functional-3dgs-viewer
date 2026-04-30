@@ -54,3 +54,139 @@ pub fn zoom_camera(state: CameraState, delta: f32) -> CameraState {
         ..state
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_camera() -> CameraState {
+        CameraState::default()
+    }
+
+    // --- update_camera_angles ---
+
+    #[test]
+    fn test_mouse_right_increases_theta() {
+        let cam = default_camera();
+        let result = update_camera_angles(cam, 100.0, 0.0);
+        assert!(result.theta > cam.theta);
+    }
+
+    #[test]
+    fn test_mouse_down_increases_phi() {
+        let cam = default_camera();
+        let result = update_camera_angles(cam, 0.0, 100.0);
+        assert!(result.phi > cam.phi);
+    }
+
+    #[test]
+    fn test_radius_unchanged_after_angle_update() {
+        let cam = default_camera();
+        let result = update_camera_angles(cam, 50.0, 30.0);
+        assert_eq!(result.radius, cam.radius);
+    }
+
+    #[test]
+    fn test_phi_clamp_upper_bound() {
+        // 극단적인 아래 드래그 — phi가 π-0.1을 넘지 않아야 함
+        let cam = default_camera();
+        let result = update_camera_angles(cam, 0.0, 100_000.0);
+        assert!(result.phi <= PI - 0.1);
+    }
+
+    #[test]
+    fn test_phi_clamp_lower_bound() {
+        // 극단적인 위 드래그 — phi가 0.1 아래로 내려가지 않아야 함
+        let cam = default_camera();
+        let result = update_camera_angles(cam, 0.0, -100_000.0);
+        assert!(result.phi >= 0.1);
+    }
+
+    // --- compute_camera_position ---
+
+    #[test]
+    fn test_camera_position_distance_equals_radius() {
+        let cam = default_camera();
+        let pos = compute_camera_position(cam);
+        // 원점으로부터의 거리가 radius와 일치해야 함
+        assert!((pos.length() - cam.radius).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_theta_zero_phi_half_pi_points_along_x() {
+        // phi=π/2, theta=0 → 카메라가 +X 축 위에 위치
+        let cam = CameraState {
+            theta: 0.0,
+            phi: PI / 2.0,
+            radius: 1.0,
+        };
+        let pos = compute_camera_position(cam);
+        assert!((pos.x - 1.0).abs() < 1e-5);
+        assert!(pos.y.abs() < 1e-5);
+        assert!(pos.z.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_phi_zero_points_along_y() {
+        // phi=0 → 카메라가 +Y 축 위에 위치 (천정)
+        let cam = CameraState {
+            theta: 0.0,
+            phi: 0.0,
+            radius: 3.0,
+        };
+        let pos = compute_camera_position(cam);
+        assert!((pos.y - 3.0).abs() < 1e-5);
+        assert!(pos.x.abs() < 1e-5);
+        assert!(pos.z.abs() < 1e-5);
+    }
+
+    // --- camera_to_view_matrix ---
+
+    #[test]
+    fn test_view_matrix_transforms_origin_to_nonzero() {
+        // 뷰 행렬은 월드 원점을 카메라 로컬 공간으로 이동시켜야 함
+        let cam = default_camera();
+        let view = camera_to_view_matrix(cam);
+        let origin_in_view = view * glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        // 원점이 카메라 앞쪽 (-z)에 있어야 함 (오른손 좌표계)
+        assert!(origin_in_view.z < 0.0);
+    }
+
+    // --- zoom_camera ---
+
+    #[test]
+    fn test_scroll_up_zooms_in() {
+        let cam = default_camera();
+        let zoomed = zoom_camera(cam, 1.0); // 위 스크롤 = 양수 delta
+        assert!(zoomed.radius < cam.radius);
+    }
+
+    #[test]
+    fn test_scroll_down_zooms_out() {
+        let cam = default_camera();
+        let zoomed = zoom_camera(cam, -1.0);
+        assert!(zoomed.radius > cam.radius);
+    }
+
+    #[test]
+    fn test_zoom_clamp_min() {
+        let cam = default_camera();
+        let zoomed = zoom_camera(cam, 1_000.0);
+        assert!(zoomed.radius >= 0.5);
+    }
+
+    #[test]
+    fn test_zoom_clamp_max() {
+        let cam = default_camera();
+        let zoomed = zoom_camera(cam, -1_000.0);
+        assert!(zoomed.radius <= 10.0);
+    }
+
+    #[test]
+    fn test_zoom_preserves_angles() {
+        let cam = default_camera();
+        let zoomed = zoom_camera(cam, 1.0);
+        assert_eq!(zoomed.theta, cam.theta);
+        assert_eq!(zoomed.phi, cam.phi);
+    }
+}
