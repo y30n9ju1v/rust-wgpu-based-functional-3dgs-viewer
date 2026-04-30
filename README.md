@@ -19,14 +19,14 @@ Follows Eric Normand's **Data / Compute / Action** model:
 
 | Layer | Rule | Examples |
 |---|---|---|
-| `data/` | Immutable structs, no behaviour | `Gaussian`, `CameraState`, `AppState` |
+| `data/` | Immutable structs, no behaviour | `Gaussian`, `GaussianGpu`, `CameraState`, `AppState` |
 | `compute/` | Pure functions — no I/O, fully unit-testable | SH evaluation, depth sort, PLY parsing |
 | `action/` | Side-effecting functions (I/O, GPU writes) | file loading, buffer uploads, render pass |
 
 ```
 src/
-├── data/          # Immutable data structures (Gaussian, CameraState, AppState)
-│   ├── gaussian.rs        # Gaussian splat (pos, opacity, scale, rot, SH coefficients)
+├── data/          # Immutable data structures (Gaussian, GaussianGpu, CameraState, AppState)
+│   ├── gaussian.rs        # Gaussian (CPU) + GaussianGpu (GPU layout, From<&Gaussian>)
 │   ├── camera.rs          # CameraState (theta, phi, radius)
 │   └── app_state.rs       # AppState — top-level aggregation of gaussians + camera
 ├── compute/       # Pure functions — no side effects, fully testable
@@ -100,9 +100,9 @@ sequenceDiagram
     gpu->>wgpu: queue.write_buffer
 
     main->>AppContext: upload_sorted_gaussians()
-    AppContext->>compute: gaussian_ops::sort_gaussians_by_depth_parallel(gaussians, camera_pos)
-    compute-->>AppContext: sorted indices (Vec<usize>)
-    AppContext->>gpu: update_buffer(queue, gaussian_buffer, sorted gaussians)
+    AppContext->>compute: gaussian_ops::prepare_sorted_gaussians(gaussians, camera_pos)
+    compute-->>AppContext: Vec<GaussianGpu> (back-to-front sorted)
+    AppContext->>gpu: update_buffer(queue, gaussian_buffer, Vec<GaussianGpu>)
     gpu->>wgpu: queue.write_buffer
 
     main->>AppContext: render()

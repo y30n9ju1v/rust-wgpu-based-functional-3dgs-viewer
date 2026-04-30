@@ -59,3 +59,48 @@ impl Gaussian {
         [self.rot_0, self.rot_1, self.rot_2, self.rot_3]
     }
 }
+
+/// GPU 업로드 전용 Gaussian 구조체.
+///
+/// WGSL `struct Gaussian`과 메모리 레이아웃이 1:1로 일치해야 한다.
+/// WGSL은 vec3<f32> 뒤에 4바이트 패딩을 자동 삽입하므로,
+/// Rust 측에서도 `_pad` 필드로 명시적으로 맞춰준다.
+///
+/// 레이아웃 (모든 필드는 16바이트 경계에 배치):
+/// - pos(12) + opacity(4) = 16
+/// - color_dc(12) + _pad0(4) = 16
+/// - scale(12) + _pad1(4) = 16
+/// - rot(16) = 16
+/// - f_rest(180) + _pad2(12) = 192 (12 vec4)
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+pub struct GaussianGpu {
+    pub pos: [f32; 3],
+    pub opacity: f32,
+    pub color_dc: [f32; 3],
+    pub _pad0: f32,
+    pub scale: [f32; 3],
+    pub _pad1: f32,
+    pub rot: [f32; 4],
+    pub f_rest: [f32; 45],
+    pub _pad2: [f32; 3], // 45 → 48개로 맞춰 WGSL array<vec4<f32>, 12>에 대응
+}
+
+/// CPU 측 `Gaussian`을 GPU 업로드용 `GaussianGpu`로 변환한다.
+impl From<&Gaussian> for GaussianGpu {
+    fn from(g: &Gaussian) -> Self {
+        let mut f_rest = [0.0f32; 45];
+        f_rest.copy_from_slice(&g.f_rest);
+        Self {
+            pos: [g.x, g.y, g.z],
+            opacity: g.opacity,
+            color_dc: [g.f_dc_0, g.f_dc_1, g.f_dc_2],
+            _pad0: 0.0,
+            scale: [g.scale_0, g.scale_1, g.scale_2],
+            _pad1: 0.0,
+            rot: [g.rot_0, g.rot_1, g.rot_2, g.rot_3],
+            f_rest,
+            _pad2: [0.0; 3],
+        }
+    }
+}

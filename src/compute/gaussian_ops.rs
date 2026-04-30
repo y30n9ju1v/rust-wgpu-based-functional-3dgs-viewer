@@ -1,4 +1,4 @@
-use crate::data::gaussian::Gaussian;
+use crate::data::gaussian::{Gaussian, GaussianGpu};
 use glam::{Quat, Vec3};
 use rayon::prelude::*;
 
@@ -43,13 +43,10 @@ pub fn sort_gaussians_by_depth(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<
 ///
 /// 정렬(compute) + 변환(compute)을 하나의 순수 함수로 묶어
 /// `action` 레이어에서 GPU 업로드만 담당할 수 있게 한다.
-pub fn prepare_sorted_gaussians(
-    gaussians: &[Gaussian],
-    camera_pos: Vec3,
-) -> Vec<crate::action::gpu::GaussianGpu> {
+pub fn prepare_sorted_gaussians(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<GaussianGpu> {
     sort_gaussians_by_depth(gaussians, camera_pos)
         .iter()
-        .map(|&i| crate::action::gpu::GaussianGpu::from(&gaussians[i]))
+        .map(|&i| GaussianGpu::from(&gaussians[i]))
         .collect()
 }
 
