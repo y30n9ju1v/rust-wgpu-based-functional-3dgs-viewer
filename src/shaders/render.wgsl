@@ -28,16 +28,32 @@ fn sigmoid(x: f32) -> f32 {
     return 1.0 / (1.0 + exp(-x));
 }
 
+/// 쿼드의 6개 꼭짓점 UV를 반환한다 (삼각형 2개, CCW).
+///
+/// naga는 런타임 값으로 배열 리터럴을 인덱싱하는 것을 허용하지 않아
+/// switch로 각 코너를 직접 반환한다.
+///
+/// 코너 배치:
+///   0(-1,-1)  1(+1,-1)  2(-1,+1)   ← 삼각형 1
+///   3(-1,+1)  4(+1,-1)  5(+1,+1)   ← 삼각형 2
+fn corner_uv(corner_idx: u32) -> vec2<f32> {
+    switch corner_idx {
+        case 0u: { return vec2<f32>(-1.0, -1.0); }
+        case 1u: { return vec2<f32>( 1.0, -1.0); }
+        case 2u: { return vec2<f32>(-1.0,  1.0); }
+        case 3u: { return vec2<f32>(-1.0,  1.0); }
+        case 4u: { return vec2<f32>( 1.0, -1.0); }
+        default: { return vec2<f32>( 1.0,  1.0); }
+    }
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
     let gaussian_idx = idx / 6u;
     let corner_idx = idx % 6u;
     
-    let corners = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0), vec2<f32>( 1.0, -1.0), vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0,  1.0), vec2<f32>( 1.0, -1.0), vec2<f32>( 1.0,  1.0),
-    );
-    let uv = corners[corner_idx];
+    // naga는 런타임 인덱스로 배열 리터럴 접근을 허용하지 않으므로 switch로 분기한다.
+    let uv = corner_uv(corner_idx);
     
     let g = gaussians[gaussian_idx];
     
