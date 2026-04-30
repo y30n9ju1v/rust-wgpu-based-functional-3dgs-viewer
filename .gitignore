@@ -1,0 +1,20 @@
+# Rust
+/target/
+
+# Assets
+assets/example.ply
+*.ply
+
+# Doc
+doc/
+
+# Logs
+error.log
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

@@ -1,0 +1,21 @@
+[package]
+name = "rust-wgpu-based-functional-3dgs-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "0.20"
+winit = "0.29"
+glam = "0.28"
+bytemuck = { version = "1.14", features = ["derive", "min_const_generics"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+pollster = "0.3"
+rayon = "1.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
