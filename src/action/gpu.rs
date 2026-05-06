@@ -15,6 +15,16 @@ pub fn create_gaussian_buffer(device: &Device, gaussians: &[Gaussian]) -> Buffer
     })
 }
 
+/// GPU Storage Buffer에 매 프레임 정렬된 인덱스 데이터를 업로드할 버퍼를 생성한다.
+pub fn create_index_buffer(device: &Device, num_gaussians: usize) -> Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Index Buffer"),
+        size: (num_gaussians * std::mem::size_of::<u32>()) as u64,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 /// 셰이더에 전달되는 카메라 uniform 데이터.
 ///
 /// WGSL `struct CameraUniform { view: mat4x4<f32>; projection: mat4x4<f32>; }`와

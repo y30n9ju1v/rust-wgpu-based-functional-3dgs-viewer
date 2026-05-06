@@ -13,7 +13,7 @@ pub mod data;
 use action::{gpu, io, render};
 use compute::camera_ops;
 use data::app_state::AppState;
-use data::gaussian::{Gaussian, GaussianGpu};
+use data::gaussian::Gaussian;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,18 +40,21 @@ struct AppContext {
     device: Device,
     queue: Queue,
     surface: Surface<'static>,
-    #[allow(dead_code)] // TODO: Resize 이벤트 처리 시 proj_matrix 갱신에 사용
     config: SurfaceConfiguration,
     pipeline: RenderPipeline,
     bind_group: BindGroup,
-    /// 가우시안 데이터를 담는 GPU Storage Buffer — 매 프레임 깊이 정렬 후 갱신됨
+    /// 가우시안 데이터를 담는 GPU Storage Buffer (초기 1회 업로드)
+    /// bind group에 레퍼런스로 넘겨지므로 Rust 코드에서 직접 읽히지 않아도 수명 유지가 필요하다.
+    #[allow(dead_code)]
     gaussian_buffer: Buffer,
+    /// 매 프레임 정렬된 가우시안 인덱스를 담는 GPU Storage Buffer
+    index_buffer: Buffer,
     /// 카메라 뷰/프로젝션 행렬을 담는 GPU Uniform Buffer
     camera_buffer: Buffer,
     /// 창 크기가 바뀌지 않는 한 고정되는 투영 행렬 (캐싱)
     proj_matrix: glam::Mat4,
     /// 매 프레임 재사용하는 정렬 결과 버퍼 — 반복 할당을 방지한다
-    sorted_buf: Vec<GaussianGpu>,
+    sorted_indices: Vec<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +72,7 @@ impl AppContext {
         let proj_matrix = make_proj_matrix(&config);
 
         let gaussian_buffer = gpu::create_gaussian_buffer(&device, &state.gaussians[..]);
+        let index_buffer = gpu::create_index_buffer(&device, state.gaussians.len());
         let camera_buffer = make_initial_camera_buffer(&device, state.camera, proj_matrix, &config);
         let shader = gpu::create_shader_module(&device, include_str!("shaders/render.wgsl"));
 
@@ -78,11 +82,12 @@ impl AppContext {
             &bind_group_layout,
             &camera_buffer,
             &gaussian_buffer,
+            &index_buffer,
         );
         let pipeline = make_render_pipeline(&device, &shader, &bind_group_layout, config.format);
 
         // 가우시안 수만큼 미리 확보해 첫 프레임부터 재할당 없이 사용한다
-        let sorted_buf = Vec::with_capacity(state.gaussians.len());
+        let sorted_indices = Vec::with_capacity(state.gaussians.len());
 
         Self {
             state,
@@ -93,9 +98,10 @@ impl AppContext {
             pipeline,
             bind_group,
             gaussian_buffer,
+            index_buffer,
             camera_buffer,
             proj_matrix,
-            sorted_buf,
+            sorted_indices,
         }
     }
 
@@ -145,18 +151,17 @@ impl AppContext {
         output.present();
     }
 
-    /// 현재 카메라 위치 기준으로 가우시안을 back-to-front 정렬해 GPU 버퍼를 갱신한다.
+    /// 현재 카메라 위치 기준으로 가우시안을 back-to-front 정렬해 GPU 인덱스 버퍼를 갱신한다.
     ///
     /// 알파 블렌딩의 정확성을 위해 매 프레임 호출된다.
-    /// 정렬+변환(compute)은 `prepare_sorted_gaussians`가, GPU 업로드(action)는 이 함수가 담당한다.
     fn upload_sorted_gaussians(&mut self) {
         let camera_pos = camera_ops::compute_camera_position(self.state.camera);
-        compute::gaussian_ops::prepare_sorted_gaussians(
+        compute::gaussian_ops::prepare_sorted_indices(
             &self.state.gaussians,
             camera_pos,
-            &mut self.sorted_buf,
+            &mut self.sorted_indices,
         );
-        gpu::update_buffer(&self.queue, &self.gaussian_buffer, &self.sorted_buf);
+        gpu::update_buffer(&self.queue, &self.index_buffer, &self.sorted_indices);
     }
 }
 
@@ -253,6 +258,7 @@ fn make_bind_group_layout(device: &Device) -> BindGroupLayout {
         entries: &[
             camera_binding_layout_entry(),
             gaussian_binding_layout_entry(),
+            index_binding_layout_entry(),
         ],
     })
 }
@@ -285,12 +291,27 @@ fn gaussian_binding_layout_entry() -> BindGroupLayoutEntry {
     }
 }
 
+/// binding=2, vertex shader에서 읽는 read-only Index Storage Buffer 레이아웃 항목
+fn index_binding_layout_entry() -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding: 2,
+        visibility: ShaderStages::VERTEX,
+        ty: BindingType::Buffer {
+            ty: BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
 /// 실제 GPU 버퍼를 레이아웃에 바인딩하는 `BindGroup`을 생성한다.
 fn make_bind_group(
     device: &Device,
     layout: &BindGroupLayout,
     camera_buffer: &Buffer,
     gaussian_buffer: &Buffer,
+    index_buffer: &Buffer,
 ) -> BindGroup {
     device.create_bind_group(&BindGroupDescriptor {
         label: Some("Main"),
@@ -303,6 +324,10 @@ fn make_bind_group(
             BindGroupEntry {
                 binding: 1,
                 resource: gaussian_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: index_buffer.as_entire_binding(),
             },
         ],
     })

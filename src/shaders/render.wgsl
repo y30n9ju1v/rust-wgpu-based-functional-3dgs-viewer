@@ -38,6 +38,7 @@ struct Gaussian {
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(0) @binding(1) var<storage, read> gaussians: array<Gaussian>;
+@group(0) @binding(2) var<storage, read> sorted_indices: array<u32>;
 
 // -----------------------------------------------------------------------------
 // 버텍스 셰이더 출력
@@ -269,7 +270,8 @@ fn degenerate_vertex() -> VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-    let g = gaussians[idx / 6u];
+    let real_idx = sorted_indices[idx / 6u];
+    let g = gaussians[real_idx];
     let uv = corner_uv(idx % 6u);
 
     let pos_view = camera.view * vec4<f32>(g.pos, 1.0);
