@@ -39,15 +39,19 @@ pub fn sort_gaussians_by_depth(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<
     indices
 }
 
-/// 가우시안을 back-to-front 정렬한 뒤 GPU 업로드 형식(`GaussianGpu`)으로 변환한다.
+/// 가우시안을 back-to-front 정렬한 뒤 `out` 버퍼에 GPU 업로드 형식으로 채운다.
 ///
-/// 정렬(compute) + 변환(compute)을 하나의 순수 함수로 묶어
-/// `action` 레이어에서 GPU 업로드만 담당할 수 있게 한다.
-pub fn prepare_sorted_gaussians(gaussians: &[Gaussian], camera_pos: Vec3) -> Vec<GaussianGpu> {
-    sort_gaussians_by_depth(gaussians, camera_pos)
-        .iter()
-        .map(|&i| GaussianGpu::from(&gaussians[i]))
-        .collect()
+/// `out`을 재사용해 매 프레임 대용량 `Vec` 할당을 방지한다.
+/// `clear`는 길이만 0으로 만들고 capacity는 유지하므로, 두 번째 호출부터는
+/// 재할당 없이 기존 메모리를 덮어쓴다.
+pub fn prepare_sorted_gaussians(
+    gaussians: &[Gaussian],
+    camera_pos: Vec3,
+    out: &mut Vec<GaussianGpu>,
+) {
+    let indices = sort_gaussians_by_depth(gaussians, camera_pos);
+    out.clear();
+    out.extend(indices.iter().map(|&i| GaussianGpu::from(&gaussians[i])));
 }
 
 /// LOD(Level of Detail) 수준에 따라 렌더링할 가우시안의 인덱스를 필터링한다.
@@ -70,8 +74,9 @@ pub fn filter_gaussians_by_lod(
 }
 
 /// LOD와 거리 조건을 모두 만족하는지 확인하는 술어 함수.
+/// sqrt를 피하기 위해 length_squared와 50²=2500을 비교한다.
 fn is_visible_at_lod(index: usize, g: &Gaussian, camera_pos: Vec3, skip_rate: usize) -> bool {
-    index.is_multiple_of(skip_rate) && (g.position() - camera_pos).length() < 50.0
+    index.is_multiple_of(skip_rate) && (g.position() - camera_pos).length_squared() < 2500.0
 }
 
 /// 가우시안 위치 전체를 뷰 공간으로 일괄 변환한다.
@@ -207,10 +212,21 @@ mod tests {
 
     #[test]
     fn test_lod_excludes_far_gaussians() {
-        // 거리 50.0 이상은 제외
+        // 제곱 거리 2500(= 50²) 이상은 제외
         let gaussians = vec![
             gaussian_at(0.0, 0.0, 1.0),  // 가까움 → 포함
             gaussian_at(0.0, 0.0, 60.0), // 멀음 → 제외
+        ];
+        let indices = filter_gaussians_by_lod(&gaussians, Vec3::ZERO, 0);
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn test_lod_boundary_exactly_50_excluded() {
+        // 거리 정확히 50.0은 제외 (< 2500 조건)
+        let gaussians = vec![
+            gaussian_at(0.0, 0.0, 49.9), // 포함
+            gaussian_at(0.0, 0.0, 50.0), // 제외 (length_squared = 2500)
         ];
         let indices = filter_gaussians_by_lod(&gaussians, Vec3::ZERO, 0);
         assert_eq!(indices, vec![0]);
@@ -289,24 +305,26 @@ mod tests {
             gaussian_at(0.0, 0.0, 5.0),
             gaussian_at(0.0, 0.0, 3.0),
         ];
-        let result = prepare_sorted_gaussians(&gaussians, Vec3::ZERO);
-        assert_eq!(result.len(), gaussians.len());
+        let mut out = Vec::new();
+        prepare_sorted_gaussians(&gaussians, Vec3::ZERO, &mut out);
+        assert_eq!(out.len(), gaussians.len());
     }
 
     #[test]
     fn test_prepare_sorted_gaussians_order() {
         // back-to-front 순서 확인: z=5가 z=1보다 먼저 와야 함
         let gaussians = vec![gaussian_at(0.0, 0.0, 1.0), gaussian_at(0.0, 0.0, 5.0)];
-        let result = prepare_sorted_gaussians(&gaussians, Vec3::ZERO);
-        // 첫 번째 GaussianGpu의 pos.z가 5.0이어야 함
-        assert!((result[0].pos[2] - 5.0).abs() < 1e-5);
-        assert!((result[1].pos[2] - 1.0).abs() < 1e-5);
+        let mut out = Vec::new();
+        prepare_sorted_gaussians(&gaussians, Vec3::ZERO, &mut out);
+        assert!((out[0].pos[2] - 5.0).abs() < 1e-5);
+        assert!((out[1].pos[2] - 1.0).abs() < 1e-5);
     }
 
     #[test]
     fn test_prepare_sorted_gaussians_empty() {
-        let result = prepare_sorted_gaussians(&[], Vec3::ZERO);
-        assert!(result.is_empty());
+        let mut out = Vec::new();
+        prepare_sorted_gaussians(&[], Vec3::ZERO, &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -314,7 +332,21 @@ mod tests {
         // GaussianGpu 변환 시 opacity 필드가 올바르게 복사되는지 확인
         let mut g = gaussian_at(1.0, 2.0, 3.0);
         g.opacity = -1.5;
-        let result = prepare_sorted_gaussians(&[g], Vec3::ZERO);
-        assert!((result[0].opacity - (-1.5)).abs() < 1e-5);
+        let mut out = Vec::new();
+        prepare_sorted_gaussians(&[g], Vec3::ZERO, &mut out);
+        assert!((out[0].opacity - (-1.5)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_prepare_sorted_gaussians_reuses_buffer() {
+        // 재사용 시 이전 내용이 clear되고 새 데이터로 채워지는지 확인
+        let gaussians = vec![gaussian_at(0.0, 0.0, 1.0), gaussian_at(0.0, 0.0, 2.0)];
+        let mut out = Vec::new();
+        prepare_sorted_gaussians(&gaussians, Vec3::ZERO, &mut out);
+        assert_eq!(out.len(), 2);
+
+        let gaussians2 = vec![gaussian_at(1.0, 0.0, 0.0)];
+        prepare_sorted_gaussians(&gaussians2, Vec3::ZERO, &mut out);
+        assert_eq!(out.len(), 1);
     }
 }

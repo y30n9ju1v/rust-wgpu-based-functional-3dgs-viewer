@@ -13,7 +13,7 @@ pub mod data;
 use action::{gpu, io, render};
 use compute::camera_ops;
 use data::app_state::AppState;
-use data::gaussian::Gaussian;
+use data::gaussian::{Gaussian, GaussianGpu};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +50,8 @@ struct AppContext {
     camera_buffer: Buffer,
     /// 창 크기가 바뀌지 않는 한 고정되는 투영 행렬 (캐싱)
     proj_matrix: glam::Mat4,
+    /// 매 프레임 재사용하는 정렬 결과 버퍼 — 반복 할당을 방지한다
+    sorted_buf: Vec<GaussianGpu>,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +68,7 @@ impl AppContext {
         let state = AppState::new(gaussians);
         let proj_matrix = make_proj_matrix(&config);
 
-        let gaussian_buffer = gpu::create_gaussian_buffer(&device, &state.gaussians);
+        let gaussian_buffer = gpu::create_gaussian_buffer(&device, &state.gaussians[..]);
         let camera_buffer = make_initial_camera_buffer(&device, state.camera, proj_matrix, &config);
         let shader = gpu::create_shader_module(&device, include_str!("shaders/render.wgsl"));
 
@@ -79,6 +81,9 @@ impl AppContext {
         );
         let pipeline = make_render_pipeline(&device, &shader, &bind_group_layout, config.format);
 
+        // 가우시안 수만큼 미리 확보해 첫 프레임부터 재할당 없이 사용한다
+        let sorted_buf = Vec::with_capacity(state.gaussians.len());
+
         Self {
             state,
             device,
@@ -90,6 +95,7 @@ impl AppContext {
             gaussian_buffer,
             camera_buffer,
             proj_matrix,
+            sorted_buf,
         }
     }
 
@@ -117,7 +123,7 @@ impl AppContext {
     /// 2. 스왑체인에서 출력 텍스처 획득
     /// 3. 렌더 패스 실행
     /// 4. 텍스처를 화면에 출력
-    fn render(&self) {
+    fn render(&mut self) {
         self.upload_sorted_gaussians();
 
         let Ok(output) = self.surface.get_current_texture() else {
@@ -143,11 +149,14 @@ impl AppContext {
     ///
     /// 알파 블렌딩의 정확성을 위해 매 프레임 호출된다.
     /// 정렬+변환(compute)은 `prepare_sorted_gaussians`가, GPU 업로드(action)는 이 함수가 담당한다.
-    fn upload_sorted_gaussians(&self) {
+    fn upload_sorted_gaussians(&mut self) {
         let camera_pos = camera_ops::compute_camera_position(self.state.camera);
-        let sorted =
-            compute::gaussian_ops::prepare_sorted_gaussians(&self.state.gaussians, camera_pos);
-        gpu::update_buffer(&self.queue, &self.gaussian_buffer, &sorted);
+        compute::gaussian_ops::prepare_sorted_gaussians(
+            &self.state.gaussians,
+            camera_pos,
+            &mut self.sorted_buf,
+        );
+        gpu::update_buffer(&self.queue, &self.gaussian_buffer, &self.sorted_buf);
     }
 }
 
