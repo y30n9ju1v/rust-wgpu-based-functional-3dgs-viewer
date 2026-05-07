@@ -100,9 +100,9 @@ sequenceDiagram
     gpu->>wgpu: queue.write_buffer
 
     main->>AppContext: upload_sorted_gaussians()
-    AppContext->>compute: gaussian_ops::prepare_sorted_gaussians(gaussians, camera_pos)
-    compute-->>AppContext: Vec<GaussianGpu> (back-to-front sorted)
-    AppContext->>gpu: update_buffer(queue, gaussian_buffer, Vec<GaussianGpu>)
+    AppContext->>compute: gaussian_ops::prepare_sorted_indices(gaussians, camera_pos, &mut sorted_indices)
+    compute-->>AppContext: Vec<u32> (back-to-front indices, reused buffer)
+    AppContext->>gpu: update_buffer(queue, index_buffer, &sorted_indices)
     gpu->>wgpu: queue.write_buffer
 
     main->>AppContext: render()
